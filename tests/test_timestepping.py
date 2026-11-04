@@ -3,7 +3,6 @@ import csv
 from dataclasses import replace
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -12,7 +11,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation, poisson_calc
 from streamer_drift_diffusion.simulation import prepare_step, _same_time
-from streamer_drift_diffusion.fluxes import nele_flow
+from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.reactions import apply_reactions
 from streamer_drift_diffusion.output import load_output_times
 from streamer_drift_diffusion.transport_coefficients import electron_mobility
@@ -30,17 +29,20 @@ class AdaptiveTests(unittest.TestCase):
         return replace(base, **kwargs)
 
     def test_transport_bound_uses_all_outgoing_faces(self):
-        state = SimpleNamespace(vex=np.zeros((3, 3)), vey=np.zeros((3, 3)),
-                                sr=np.ones((3, 3)), sz=np.ones((3, 3)), volume=np.ones((3, 3)))
-        state.vex[1, 1], state.vex[2, 1] = -2., 3.
-        state.vey[1, 1], state.vey[1, 2] = -4., 5.
         config = self.config()
+        state = initialize_simulation(config)
+        volume = state.volume[1, 1]
+        state.vex[1, 1] = -2.*volume/state.sr[1, 1]
+        state.vex[2, 1] = 3.*volume/state.sr[2, 1]
+        state.vey[1, 1] = -4.*volume/state.sz[1, 1]
+        state.vey[1, 2] = 5.*volume/state.sz[1, 1]
         dt = transport_limit(state, config)
         self.assertAlmostEqual(dt, config.dt_cfl_number / 14.)
+        transport = ElectronTransport(state, config.delta)
         for seed in range(5):
-            density = np.random.default_rng(seed).random((3, 3))
-            nele_flow(density, state.vex, state.vey, dt, state.volume, state.sr, state.sz)
-            self.assertTrue(np.all(density >= 0))
+            state.ne[:] = np.random.default_rng(seed).random(state.ne.shape)
+            transport.step(state, dt)
+            self.assertTrue(np.all(state.ne >= 0))
 
     def test_dielectric_zero_field_is_not_zero_conductivity(self):
         config = self.config()
@@ -88,14 +90,14 @@ class AdaptiveTests(unittest.TestCase):
         state = initialize_simulation(config)
         calls = []
 
-        def fail_first(*args):
-            calls.append(args[3])
+        def fail_first(operator, current, dt):
+            calls.append(dt)
             if len(calls) == 1:
                 state.ne[:] = -1.
                 state.n2p[:] = -10.
             return np.zeros(3)
 
-        with patch('streamer_drift_diffusion.fluxes.nele_flow', side_effect=fail_first):
+        with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail_first):
             dt, retries = try_density_step(state, config, config.dt)
         self.assertEqual(retries, 1)
         self.assertEqual(dt, config.dt / 2)
@@ -107,11 +109,11 @@ class AdaptiveTests(unittest.TestCase):
         state = initialize_simulation(config)
         original = {name: getattr(state, name).copy() for name in DENSITY_NAMES}
 
-        def fail(*args):
+        def fail(operator, current, dt):
             state.ne[:] = -1.
             state.o2[:] = 0.
 
-        with patch('streamer_drift_diffusion.fluxes.nele_flow', side_effect=fail):
+        with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail):
             with self.assertRaises(TimestepError):
                 try_density_step(state, config, config.dt)
         for name in DENSITY_NAMES:
@@ -134,7 +136,8 @@ class AdaptiveTests(unittest.TestCase):
         config = self.config(dt_max=2e-12, dt_min=0.4e-12)
         with tempfile.TemporaryDirectory() as directory:
             state = run_simulation(config, output_dir=directory, verbose=False)
-            rows = list(csv.DictReader((Path(directory) / 'times.csv').open()))
+            with (Path(directory) / 'times.csv').open() as times_stream:
+                rows = list(csv.DictReader(times_stream))
             times = [float(row['time_s']) for row in rows]
             assert_allclose(times, [0., 1.3e-12, 2.6e-12, 3.5e-12], rtol=1e-15, atol=0.)
             for row in rows:
@@ -223,7 +226,8 @@ class AdaptiveTests(unittest.TestCase):
                                  voltage_waveform_file=str(path), background_ionization=0.)
             output = Path(directory) / 'output'
             run_simulation(config, output_dir=output, verbose=False)
-            rows = list(csv.DictReader((output / 'timestep_history.csv').open()))
+            with (output / 'timestep_history.csv').open() as history:
+                rows = list(csv.DictReader(history))
             times = np.array([float(row['time_s']) for row in rows])
             self.assertTrue(np.any(np.isclose(times, 1e-12, rtol=1e-14, atol=0.)))
             self.assertTrue(np.any(np.isclose(times, 2e-12, rtol=1e-14, atol=0.)))

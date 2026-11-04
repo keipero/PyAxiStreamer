@@ -13,7 +13,7 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
-from streamer_drift_diffusion.fluxes import diffusion_rates, nele_flow
+from streamer_drift_diffusion.transport import diffusion_rates, ElectronTransport
 from streamer_drift_diffusion.grid import initialize_grid
 from streamer_drift_diffusion.timestepping import (
     TimestepError, diffusion_limit, transport_limit, timestep_limits, try_density_step,
@@ -39,9 +39,12 @@ class DiffusionTests(unittest.TestCase):
             electron_diffusion=.5, max_step=0), **kwargs)
 
     def step(self, state, dt, coefficient=None):
-        return nele_flow(state.ne, state.vex, state.vey, dt, state.volume, state.sr, state.sz,
-                         state.gas_mask, state.de if coefficient is None else coefficient,
-                         state.dr[0])
+        if coefficient is not None:
+            state.de[:] = coefficient
+        if getattr(self, '_transport_state', None) is not state:
+            self._transport_state = state
+            self._transport = ElectronTransport(state, state.dr[0])
+        return self._transport.step(state, dt)
 
     def test_config_validation_and_coefficient_field(self):
         for coefficient in (-1., np.nan, np.inf, True, None, '1'):
@@ -73,17 +76,13 @@ class DiffusionTests(unittest.TestCase):
         _, axial = diffusion_rates(coefficient, np.ones_like(gas), 1., grid['sr'], grid['sz'])
         assert_array_equal(axial[:, 1], 0.)
 
-    def test_zero_coefficient_reproduces_drift_flux_exactly(self):
+    def test_zero_coefficient_and_zero_velocity_keep_zero_state(self):
         state = initialize_simulation(self.config())
-        rng = np.random.default_rng(5)
-        density = rng.random(state.ne.shape)*state.gas_mask
-        vr, vz = rng.normal(size=density.shape), rng.normal(size=density.shape)
-        left, right = density.copy(), density.copy()
-        args = (vr, vz, 1e-8, state.volume, state.sr, state.sz, state.gas_mask)
-        a = nele_flow(left, *args)
-        b = nele_flow(right, *args, np.zeros_like(density), state.dr[0])
-        assert_array_equal(left, right)
-        assert_array_equal(a, b)
+        state.de[:] = 0.
+        with np.errstate(over='raise', invalid='raise', divide='raise'):
+            losses = self.step(state, 1e-8)
+        assert_array_equal(state.ne, 0.)
+        assert_array_equal(losses, 0.)
 
     def test_diffusion_limit_excludes_electrode_receiving_flux(self):
         config = self.config(nr=3, nz=3, delta=1., electrode_gap=1., cathode_radius=.3)
@@ -156,15 +155,17 @@ class DiffusionTests(unittest.TestCase):
         initial = np.sum(state.ne*state.volume)*2*np.pi
         calls = []
 
-        def fail_first(*args):
-            losses = nele_flow(*args)
+        real_step = ElectronTransport.step
+
+        def fail_first(operator, current, dt):
+            losses = real_step(operator, current, dt)
             calls.append(1)
             if len(calls) == 1:
                 state.ne[state.gas_mask] = -1.
             return losses
 
         dt = transport_limit(state, config)*.1
-        with patch('streamer_drift_diffusion.fluxes.nele_flow', side_effect=fail_first):
+        with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail_first):
             accepted, retries = try_density_step(state, config, dt)
         self.assertEqual(retries, 1)
         self.assertEqual(accepted, dt/2)
@@ -179,12 +180,13 @@ class DiffusionTests(unittest.TestCase):
                                  delta=spacing, electrode_gap=3e-3, electron_diffusion=coefficient)
             grid = initialize_grid(config)
             density = gaussian_average(grid, sigma, center)
-            zero = np.zeros_like(density)
-            state = SimpleNamespace(**grid, de=np.full_like(density, coefficient), vex=zero, vey=zero)
+            state = SimpleNamespace(**grid, ne=density, de=np.full_like(density, coefficient),
+                                    vex=np.zeros((config.nr+1, config.nz)),
+                                    vey=np.zeros((config.nr, config.nz+1)))
+            transport = ElectronTransport(state, spacing)
             count = math.ceil(end/(.05*diffusion_limit(state, config)))
             for _ in range(count):
-                nele_flow(density, zero, zero, end/count, grid['volume'], grid['sr'], grid['sz'],
-                          grid['gas_mask'], coefficient, spacing)
+                transport.step(state, end/count)
             spread = np.sqrt(sigma*sigma+2*coefficient*end)
             exact = (sigma/spread)**3*gaussian_average(grid, spread, center)
             errors.append(np.sum(np.abs(density-exact)*grid['volume'])/np.sum(exact*grid['volume']))
@@ -201,24 +203,41 @@ class DiffusionTests(unittest.TestCase):
             run_simulation(config, output_dir=directory, verbose=False)
             metadata = json.loads((Path(directory)/'run_config.json').read_text())
             self.assertEqual(metadata['config']['electron_diffusion'], .5)
-            rows = list(csv.DictReader((Path(directory)/'timestep_history.csv').open()))
+            self.assertEqual(metadata['transport_backend'], 'fipy')
+            self.assertEqual(metadata['transport_time_scheme'], 'explicit Euler')
+            self.assertIn('fipy_version', metadata)
+            self.assertIn('fipy_solver_suite', metadata)
+            with (Path(directory)/'timestep_history.csv').open() as history:
+                rows = list(csv.DictReader(history))
             self.assertTrue(rows)
             self.assertTrue(all(float(row['dt_diffusion_s']) > 0. for row in rows))
             self.assertTrue(all(float(row['dt_s']) <= float(row['dt_diffusion_s']) for row in rows))
 
     def test_forward_euler_time_convergence_against_discrete_eigenmode(self):
-        # 1次元の離散固有モードを使い、空間誤差を除いて時間精度を確認する。
+        # 2円環の半セル吸収を含む固有モードで、空間誤差を除く。
         size, coefficient, end = 8, .2, 1.
-        initial = np.broadcast_to(np.sin(np.pi*(np.arange(size)+.5)/size), (2, size)).copy()
-        exact = initial*np.exp(-4*coefficient*np.sin(np.pi/(2*size))**2*end)
+        radial = coefficient*np.array([[-2., 2.], [2/3, -10/3]])
+        eigenvalues, eigenvectors = np.linalg.eig(radial)
+        assert_allclose(eigenvalues.imag, 0., atol=1e-15)
+        eigenvalues, eigenvectors = eigenvalues.real, eigenvectors.real
+        slowest = np.argmax(eigenvalues)
+        mode = eigenvectors[:, slowest]
+        mode *= np.sign(mode[0])
+        initial = mode[:, None]*np.sin(np.pi*(np.arange(size)+.5)/size)
+        exact = initial*np.exp((eigenvalues[slowest]
+                               -4*coefficient*np.sin(np.pi/(2*size))**2)*end)
         errors = []
-        zero = np.zeros_like(initial)
         for count in (10, 20, 40):
-            density = initial.copy()
+            config = self.config(nr=2, nz=size, delta=1., electrode_gap=100.,
+                                 electron_diffusion=coefficient)
+            grid = initialize_grid(config)
+            state = SimpleNamespace(**grid, ne=initial.copy(),
+                                    de=np.full_like(initial, coefficient),
+                                    vex=np.zeros((3, size)), vey=np.zeros((2, size+1)))
+            transport = ElectronTransport(state, 1.)
             for _ in range(count):
-                nele_flow(density, zero, zero, end/count, np.ones_like(initial), zero,
-                          np.ones_like(initial), diffusion=coefficient, spacing=1.)
-            errors.append(float(np.max(np.abs(density-exact))))
+                transport.step(state, end/count)
+            errors.append(float(np.max(np.abs(state.ne-exact))))
         self.assertTrue(1.9 < errors[0]/errors[1] < 2.1)
         self.assertTrue(1.9 < errors[1]/errors[2] < 2.1)
 

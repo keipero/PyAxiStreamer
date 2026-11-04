@@ -10,7 +10,7 @@ from .initial_conditions import initialize_simulation
 from .electrostatics import calculate_charge_density, calculate_potential, calculate_electric_field
 from .transport_coefficients import calculate_transport_coefficients
 from .reactions import calculate_reaction_coefficients, apply_reactions
-from .fluxes import nele_flow
+from .transport import ElectronTransport
 from .voltage_waveforms import load_voltage_waveform, applied_voltage
 from .output import write_c_vector, write_c_matrix, write_step_output, AdaptiveOutput
 from .timestepping import TimestepError, timestep_limits, transport_limit, try_density_step, validate_densities
@@ -25,7 +25,7 @@ def prepare_step(state, config, time, *, waveform=None, verbose=True):
     calculate_reaction_coefficients(state)
 
 
-def advance_step(state, config, time, *, waveform=None, verbose=True):
+def advance_step(state, config, time, *, waveform=None, verbose=True, transport=None):
     """
     電位・電場・電子輸送・反応を計算し、状態を1step更新する。
 
@@ -40,6 +40,8 @@ def advance_step(state, config, time, *, waveform=None, verbose=True):
             から読み込む。DCモードでは使用しない。既定値はNone。
         verbose (bool, optional): Trueの場合、Poisson反復の進捗を
             config.poisson_progress_everyに従って表示する。既定値はTrue。
+        transport (ElectronTransport, optional): 再利用するFiPy輸送オブジェクト。
+            省略時はこの呼出し用に生成する。
 
     Returns:
         None: 計算結果はstateの配列に反映する。
@@ -56,8 +58,8 @@ def advance_step(state, config, time, *, waveform=None, verbose=True):
     prepare_step(state, config, time, waveform=waveform, verbose=verbose)
     if np.any(state.de) and config.dt > transport_limit(state, config):
         raise TimestepError("fixed dt exceeds drift-diffusion CFL; reduce dt or use adaptive_timestep")
-    state.electron_losses[:] += nele_flow(state.ne, state.vex, state.vey, config.dt,
-                                           state.volume, state.sr, state.sz, state.gas_mask, state.de, config.delta)
+    transport = ElectronTransport(state, config.delta) if transport is None else transport
+    state.electron_losses[:] += transport.step(state, config.dt)
     apply_reactions(state, config)
 
 
@@ -94,10 +96,11 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
     """
     config = SimulationConfig() if config is None else config
     state = initialize_simulation(config)
+    transport = ElectronTransport(state, config.delta)
     waveform = load_voltage_waveform(config.voltage_waveform_file) if config.voltage_mode == "impulse" else None
     output_dir = Path(output_dir)
     if config.adaptive_timestep:
-        return _run_adaptive(state, config, waveform, output_dir, write_output, verbose)
+        return _run_adaptive(state, config, waveform, output_dir, write_output, verbose, transport)
     if write_output:
         output_dir.mkdir(parents=True, exist_ok=True)
         write_c_vector(output_dir / "rh.csv", state.rh)
@@ -108,7 +111,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
     # ループのステップ数は0からconfig.max_stepまで
     for step in range(config.max_step + 1):
         # 1ステップ進める
-        advance_step(state, config, time, waveform=waveform, verbose=verbose)
+        advance_step(state, config, time, waveform=waveform, verbose=verbose, transport=transport)
         if step % config.write_every == 0:
             if write_output:
                 write_step_output(output_dir, step, state)
@@ -141,7 +144,7 @@ def _same_time(left, right):
     return abs(left - right) <= 8 * max(math.ulp(left), math.ulp(right))
 
 
-def _run_adaptive(state, config, waveform, output_dir, write_output, verbose):
+def _run_adaptive(state, config, waveform, output_dir, write_output, verbose, transport):
     """実時刻で前進し、更新の受理後に電場も同じ時刻へ揃えて保存する。
 
     初期状態を出力番号0へ保存し、最終時刻も必ず保存する。
@@ -187,7 +190,7 @@ def _run_adaptive(state, config, waveform, output_dir, write_output, verbose):
                 if not np.isfinite(dt) or dt <= 0 or time + dt == time:
                     raise TimestepError(f"time cannot advance at t={time:.9e}, dt={dt}")
                 # 出力・終端へ揃える最後の端数は、dt_minより小さくても安全側。
-                dt, retries = try_density_step(state, config, dt)
+                dt, retries = try_density_step(state, config, dt, transport=transport)
                 advanced_time = time + dt
                 # 使用dtは安定条件内のまま。時計だけをイベント時刻へ揃え、
                 # 丸め誤差分について密度更新やstep加算を繰り返さない。

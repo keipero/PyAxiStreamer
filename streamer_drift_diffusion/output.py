@@ -6,6 +6,8 @@ import json
 from contextlib import ExitStack
 
 import numpy as np
+import fipy
+import scipy
 
 from ._acceleration import NUMBA_AVAILABLE, get_num_threads
 
@@ -132,6 +134,10 @@ class AdaptiveOutput:
         (self.directory / "run_config.json").write_text(
             json.dumps({"config": asdict(self.config), "numpy_version": np.__version__,
                         "numba_available": NUMBA_AVAILABLE, "num_threads_used": get_num_threads(),
+                        "transport_backend": "fipy", "transport_time_scheme": "explicit Euler",
+                        "fipy_version": fipy.__version__, "scipy_version": scipy.__version__,
+                        "fipy_solver_suite": fipy.solvers.solver_suite,
+                        "transport_boundary": "half-cell absorption sink; no inflow",
                         "model": "staggered-v1", "electrode_boundary": "staircase Dirichlet",
                         "field_layout": "cell-centered Ex/Ey/absE; complete face fields and velocities in state",
                         "field_unit": "Td",

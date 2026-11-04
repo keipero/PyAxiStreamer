@@ -11,7 +11,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation, poisson_calc
 from streamer_drift_diffusion.electrostatics import calculate_charge_density, calculate_potential
-from streamer_drift_diffusion.fluxes import nele_flow
+from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.grid import initialize_grid
 from streamer_drift_diffusion.reactions import apply_reactions
 from streamer_drift_diffusion.timestepping import transport_limit, chemistry_limit, dielectric_limit, try_density_step
@@ -91,9 +91,9 @@ class GridDomainTests(unittest.TestCase):
             dt = transport_limit(state, config)*.5
             initial = np.sum(state.ne*state.volume)*2*np.pi
             losses = np.zeros(3)
+            transport = ElectronTransport(state, config.delta)
             for _ in range(100):
-                losses += nele_flow(state.ne, state.vex, state.vey, dt,
-                                     state.volume, state.sr, state.sz, state.gas_mask)
+                losses += transport.step(state, dt)
             final = np.sum(state.ne*state.volume)*2*np.pi
             self.assertAlmostEqual((final+losses.sum())/initial, 1., places=13)
             self.assertTrue(np.all(state.ne >= 0.))
@@ -105,10 +105,11 @@ class GridDomainTests(unittest.TestCase):
         config = self.config()
         state = initialize_simulation(config)
         for sign in (-1., 1.):
-            empty = np.zeros_like(state.ne)
-            losses = nele_flow(empty, np.full_like(empty, sign*1e3), np.full_like(empty, sign*2e3),
-                               1e-12, state.volume, state.sr, state.sz, state.gas_mask)
-            assert_array_equal(empty, 0.)
+            state.ne[:] = 0.
+            state.vex[:] = sign*1e3
+            state.vey[:] = sign*2e3
+            losses = ElectronTransport(state, config.delta).step(state, 1e-12)
+            assert_array_equal(state.ne, 0.)
             assert_array_equal(losses, 0.)
 
     def test_chemistry_and_dielectric_limits_exclude_metal_cells(self):
@@ -132,14 +133,16 @@ class GridDomainTests(unittest.TestCase):
         initial = np.sum(state.ne*state.volume)*2*np.pi
         calls = []
 
-        def fail_first(*args):
-            losses = nele_flow(*args)
+        real_step = ElectronTransport.step
+
+        def fail_first(operator, current, dt):
+            losses = real_step(operator, current, dt)
             calls.append(1)
             if len(calls) == 1:
                 state.ne[state.gas_mask] = -1.
             return losses
 
-        with patch('streamer_drift_diffusion.fluxes.nele_flow', side_effect=fail_first):
+        with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail_first):
             dt, retries = try_density_step(state, config, config.dt)
         self.assertEqual(retries, 1)
         self.assertEqual(dt, config.dt/2)
@@ -152,7 +155,8 @@ class GridDomainTests(unittest.TestCase):
             state = run_simulation(config, output_dir=directory, verbose=False)
             mask = np.loadtxt(Path(directory)/'gas_mask.csv').reshape(state.ne.shape)
             assert_array_equal(mask, state.gas_mask)
-            rows = list(csv.DictReader((Path(directory)/'timestep_history.csv').open()))
+            with (Path(directory)/'timestep_history.csv').open() as history:
+                rows = list(csv.DictReader(history))
             self.assertTrue(rows)
             self.assertIn('electrode_electron_loss', rows[-1])
             assert_array_equal(state.ne[~state.gas_mask], 0.)

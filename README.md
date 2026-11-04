@@ -2,17 +2,25 @@
 
 隣接する `streamer_julia` の軸対称ストリーマ放電プログラムを、NumPyを用いてPythonへ翻訳しました。元のJuliaファイルは変更していません。このフォルダだけで計算できます。インパルス波形も同梱しています。
 
+電子の移流拡散はFiPyの円筒有限体積法を使用します。Poisson求解はNumbaによるRB-SORです。
+[FiPy移行方針と検証結果](FIPY_MIGRATION_PLAN.md)に、境界条件・時間離散化・検証範囲を記載しています。
+
 ## 実行方法
 
-Python 3.10以上を使用します。以下は、この `streamer_python` フォルダで実行してください。
+Python 3.10以上を使用します。以下は、この `pyaxistreamer-master` フォルダで実行してください。
 
 ```powershell
-cd streamer_python
+cd pyaxistreamer-master
 python -m pip install -r requirements-fast.txt
-python bin/run.py --steps=0 --output=outputdata_smoke
+$env:FIPY_SOLVERS = "scipy"
+python -m streamer_drift_diffusion --steps=0 --output=outputdata_smoke
 ```
 
 NumbaはPoisson反復・基礎電位を高速化します。Poissonソルバーは並列RB-SORのみで、選択設定はありません。初回だけコンパイル時間がかかります。Numbaを使用しない場合は `requirements.txt` だけをインストールできますが、標準格子での長時間計算にはNumbaの利用を推奨します。依存ライブラリは実際に使用するPython環境へインストールしてください。
+
+FiPyとSciPyは基本依存です。輸送は陽的Euler・一次上流移流・面係数の調和平均による拡散で、既存の合算CFL制限を使います。電極・外端の半セル吸収を損失項として与え、流出粒子数を同じ項から集計します。FiPy格子と方程式は各計算で一度作り、毎stepの密度・速度・Dを更新します。陰解法やPETScはまだ導入していません。
+
+旧`nele_flow()`と`fluxes.py`は削除しました。単独の輸送更新は`transport = ElectronTransport(state, config.delta)`を一度作り、`losses = transport.step(state, dt)`で行います。速度は全セル面の形状が必須です。
 
 ### 並列RB-SORとスレッド数
 
@@ -33,18 +41,18 @@ CLIからは `--num-threads=4` で指定できます。CLIの計算条件の既�
 
 ```powershell
 # 標準: 200×150セル、DC 4 kV、step 0～5000
-python bin/run.py
+python -m streamer_drift_diffusion
 
 # 同梱インパルス: 最大5 kV
-python bin/run.py --voltage-mode=impulse --impulse-peak=5000 --output=outputdata_impulse
+python -m streamer_drift_diffusion --voltage-mode=impulse --impulse-peak=5000 --output=outputdata_impulse
 
 # パルス幅を2倍にして、終了stepも延長
-python bin/run.py --voltage-mode=impulse --impulse-time-scale=2 --steps=30000 --output=outputdata_wide
+python -m streamer_drift_diffusion --voltage-mode=impulse --impulse-time-scale=2 --steps=30000 --output=outputdata_wide
 
 # CSVを出さず計算
 python -m streamer_drift_diffusion --steps=10 --no-output --quiet
 
-python bin/run.py --help
+python -m streamer_drift_diffusion --help
 python -m unittest discover -s tests -v
 ```
 
@@ -64,7 +72,7 @@ config = SimulationConfig(nr=400, nz=300, delta=5e-6,
 - 電極面は印加電位、接地平面は0 V。上端・外周の気体境界には同じ双曲線電極の解析電位を与えます。空間電荷補正は電極・接地・上端・外周で0、軸は対称条件です。外周を接地電極とみなす条件ではありませんが、有限領域による影響は領域拡大試験で確認してください。
 - 初期化時に1 V印加の離散ラプラス解 `unit_potential` を求め、各時刻では印加電圧倍します。単なる解析電位のサンプリングから変わるため、旧出力との完全一致は要件としません。
 - 電極内の全密度・反応・背景供給を0にします。初期分布・CFL・誘電緩和・反応の制約も気体を対象とします。
-- 電子輸送では電極・接地面への吸収、上端・外周への流出を許し、外からの流入と電子放出は含めません。外端も境界電位から法線電場・速度を求めます。`nele_flow()` は `[電極, 接地面, 上端＋外周]` の流出電子数を返し、受理更新だけを `electron_losses` へ累積します。
+- 電子輸送では電極・接地面への吸収、上端・外周への流出を許し、外からの流入と電子放出は含めません。外端も境界電位から法線電場・速度を求めます。`ElectronTransport.step()`は`[電極, 接地面, 上端＋外周]`の流出電子数を返し、受理更新だけを`electron_losses`へ累積します。
 - 固定・適応出力に `gas_mask.csv` を追加。適応履歴には3種類の累積流出電子数を記録します。中心の `ex/ey/abs_e` は金属内0。金属と気体の間の法線電場は面配列へ保持します。
 
 `notebooks/plot_electrode_grid.ipynb` はPythonのConfigから実際の電極マスクと格子を表示します。まずこの図を確認してから計算してください。階段状境界の近傍電場には格子依存性が残ります。
@@ -94,7 +102,7 @@ config = SimulationConfig(nr=400, nz=300, delta=5e-6,
 
 外端の法線電場はPoissonと同じ解析境界電位を使い、内側面を複製しません。単位境界電位は初期化時に`radial_boundary`・`upper_boundary`へ保存します。Poissonの離散作用と、法線電場の有限体積発散の一致をテストしています。CFLは全セル面の速度、誘電緩和は同じ面の移動度と隣接する最大電子密度から評価します。
 
-**API・CSVの変更点：** `state.ex/ey`は下側面から中心へ意味が変わります。`state.vex/vey`は全面の形状へ変わるため、密度配列と添字を直接共有する処理は見直してください。`nele_flow()`単独利用では従来の下側面だけの速度配列も受け付けます。CSVのEx・Ey・absEは中心値として全て`nr*nz`行を維持し、従来の中心座標・描画コードで読み込めます。適応出力のmodelは`staggered-v1`、設定JSONへ配置と単位も記録します。
+**API・CSVの変更点：** `state.ex/ey`はセル中心、`state.vex/vey`は全面の形状です。下側面だけの速度配列は受け付けません。CSVのEx・Ey・absEは中心値として全て`nr*nz`行を維持し、従来の中心座標・描画コードで読み込めます。適応出力のmodelは`staggered-v1`、設定JSONへ配置と単位、FiPyの版と求解方式も記録します。
 
 Notebookは**カーネルを再起動して最初から実行**してください。物理条件の既定値は変えていません。面移動度・反応係数・境界流束の評価が変わるため、旧出力との数値一致は求めません。新しい出力先で同じ実時刻の結果を比較してください。
 
@@ -117,7 +125,7 @@ config = SimulationConfig(electron_diffusion=1.0, adaptive_timestep=True, t_end=
 - `transport_limit()` はドリフトと拡散の損失対角係数を合算して制限します。個別上限の最小だけでは同時更新の非負性を保証できません。
 - `dt_cfl_s` は合算輸送の上限（`dt_cfl_number`を含む）、`dt_diffusion_s` は純拡散の上限です。合算CFLの方が厳しいため、拡散がある場合も支配条件が`cfl`と記録され得ます。さらに共通の安全係数を適用します。
 - 正のDを指定した固定モードは、dtが合算CFLを超えると更新前に停止します。適応モードは刻みを縮小し、拒否した試行の密度・流出収支を復元します。
-- D=0では、導入前の固定／適応・正負DC／インパルスの6条件で既存36配列がバイト単位で一致しました。
+- 拡散導入時のD=0のバイト一致は旧輸送実装の検証結果です。現在のFiPy版は、D=0／正のDの12条件で旧実装との最大スケール誤差1.49e-13を確認しています。丸め順序が変わるためバイト一致は要求しません。
 
 検証用一定係数によるGaussianの広がりと時間精度は確認済みです。物理係数の妥当性、長時間のストリーマ発展、縞状分布の改善は別途評価します。一次上流法に由来する数値拡散も残ります。
 
@@ -127,7 +135,7 @@ config = SimulationConfig(electron_diffusion=1.0, adaptive_timestep=True, t_end=
 
 ```powershell
 # 5.001 nsまで、最大dt=1 ps、0.1 ns間隔で出力
-python bin/run.py --adaptive-timestep --t-end=5.001e-9 --dt-max=1e-12 --output-interval=1e-10 --output=outputdata_adaptive
+python -m streamer_drift_diffusion --adaptive-timestep --t-end=5.001e-9 --dt-max=1e-12 --output-interval=1e-10 --output=outputdata_adaptive
 ```
 
 出力先にはCSVのない新しいフォルダを指定します。初期状態を出力番号0へ保存し、指定間隔と最終時刻の状態も保存します。CSV番号は**出力番号**であり、受理step番号や時刻ではありません。
@@ -157,7 +165,7 @@ python bin/run.py --adaptive-timestep --t-end=5.001e-9 --dt-max=1e-12 --output-i
 1. `simulation.py::run_simulation()` → `initial_conditions.py::initialize_simulation()`で初期化し、`simulation.py::_run_adaptive()`へ分岐します。
 2. `simulation.py::_prepare_adaptive()` → `prepare_step()`で電荷源・電場・速度・反応係数を準備します。
 3. `timestepping.py::timestep_limits()` → `transport_limit()`、`dielectric_limit()`、`chemistry_limit()`、`diffusion_limit()`で上限を評価し、安全係数・dt_max・増加上限・次のイベント時刻で刻みを制限します。
-4. `timestepping.py::try_density_step()` → `fluxes.py::nele_flow()` → `reactions.py::apply_reactions(..., dt=actual_dt)`で試行します。移流後・反応後の密度と制約を検査し、失敗時は7種の密度を復元して刻みを半分にします。
+4. `timestepping.py::try_density_step()` → `transport.py::ElectronTransport.step()` → `reactions.py::apply_reactions(..., dt=actual_dt)`で試行します。輸送後・反応後の密度と制約を検査し、失敗時は7種の密度を復元して刻みを半分にします。FiPyの現在値・旧値も次の試行開始時に復元済みstateから同期します。
 5. 受理したdtだけ時刻を進め、`_prepare_adaptive()`で電場を同じ時刻へ更新します。この値を次の刻み選択にも再利用します。
 6. `output.py::AdaptiveOutput.record_step()`で全受理刻み、`save_frame()`で指定時刻・最終時刻の状態を保存します。
 
@@ -169,7 +177,7 @@ python bin/run.py --adaptive-timestep --t-end=5.001e-9 --dt-max=1e-12 --output-i
 
 | ファイル | 内容 |
 |---|---|
-| `run_config.json` | 計算設定、NumPy版、出力番号・時刻の規約 |
+| `run_config.json` | 計算設定、NumPy・FiPy・SciPy版、輸送方式・ソルバー、出力番号・時刻の規約 |
 | `times.csv` | frame、受理step、実時刻time_s、直前dt_s、電場時刻field_time_s |
 | `timestep_history.csv` | 全受理stepのdt、合算輸送CFL・誘電緩和・反応・純拡散の制約、支配条件、拒否回数、密度・電場範囲、電子総数・正味電荷・3種の累積流出電子数 |
 | `failure.json` / `failure_state.npz` | 刻み不足・再試行失敗・非有限値・Poisson未収束などの停止診断 |
@@ -199,16 +207,14 @@ print(state.ne.shape, state.ne.max())
 
 ## フォルダ構成
 
-この `streamer_python/` がPython版のプロジェクトルートです。計算本体は `streamer_drift_diffusion/`、実行入口は `bin/` とルートのNotebook、保存済み結果の描画は `notebooks/` に分かれています。
+この `pyaxistreamer-master/` がPython版のプロジェクトルートです。計算本体は `streamer_drift_diffusion/`、実行入口は `python -m streamer_drift_diffusion` とルートのNotebook、保存済み結果の描画は `notebooks/` に分かれています。
 
 ```text
-streamer_python/
+pyaxistreamer-master/
 ├─ README.md                         # 実行方法・コード構成（この文書）
 ├─ pyproject.toml                    # パッケージ情報・依存関係・CLI登録
-├─ requirements.txt                  # 基本依存（NumPy）
+├─ requirements.txt                  # 基本依存（NumPy・FiPy・SciPy）
 ├─ requirements-fast.txt             # 基本依存 + Numba
-├─ bin/
-│  └─ run.py                         # インストールせずに使えるCLI入口
 ├─ run_streamer.ipynb                # 条件設定 → 計算 → 結果描画
 ├─ streamer_drift_diffusion/         # 計算本体
 │  ├─ __init__.py                    # Python向け公開API
@@ -221,7 +227,7 @@ streamer_python/
 │  ├─ electrostatics.py              # 電荷源・電位・換算電場
 │  ├─ voltage_waveforms.py           # DC／インパルス電圧
 │  ├─ transport_coefficients.py      # 電子ドリフト速度
-│  ├─ fluxes.py                      # 電子のセル間移流
+│  ├─ transport.py                   # FiPy電子移流拡散・吸収・流出収支
 │  ├─ reactions.py                   # 反応係数・各粒子密度の更新
 │  ├─ output.py                      # C／Julia互換のCSV保存
 │  ├─ _acceleration.py               # Numbaの有効化・代替処理
@@ -245,7 +251,6 @@ streamer_python/
 
 | ファイル | 主なクラス・関数 | 役割と連携 |
 |---|---|---|
-| [bin/run.py](bin/run.py) | `main()` の呼び出し | プロジェクトルートをPythonの検索パスに追加し、`__main__.py` のCLI処理へ渡します。 |
 | [__main__.py](streamer_drift_diffusion/__main__.py) | `main()` | `--steps`、`--voltage-mode` などを解析して `SimulationConfig` を作り、`run_simulation()` を呼びます。`python -m streamer_drift_diffusion` と、パッケージインストール後の `streamer-python` も同じ入口です。 |
 | [__init__.py](streamer_drift_diffusion/__init__.py) | 公開APIの再公開 | `from streamer_drift_diffusion import ...` で設定・状態・実行関数などを読み込めるようにします。 |
 | [simulation_types.py](streamer_drift_diffusion/simulation_types.py) | `SimulationConfig`、`SimulationState`、`molecular_density()`、`gap_length()` | 格子・電圧・時間刻み・反応条件などの設定と、全状態配列を定義します。分子数密度とギャップ長の計算もここです。 |
@@ -261,7 +266,7 @@ streamer_python/
 | [voltage_waveforms.py](streamer_drift_diffusion/voltage_waveforms.py) | `load_voltage_waveform()`、`normalized_voltage()`、`applied_voltage()` | 波形をSI単位に換算し、振幅規格化・線形補間・時間倍率を適用して、その時刻の印加電圧を返します。DCでは一定電圧を返します。 |
 | [electrostatics.py](streamer_drift_diffusion/electrostatics.py) | `discretization()`、`calculate_charge_density()`、`calculate_potential()`、`calculate_electric_field()` | 初期化時にPoisson係数 `p1`～`p5` を生成します。各stepでは密度から電荷源を作り、`initialize_potential()` で準備した離散単位電位を電圧倍した `lphi` と、`poisson_calc()` の並列RB-SOR解 `pphi` を足して `phi` を求めます。その差分から換算電場を計算します。 |
 | [transport_coefficients.py](streamer_drift_diffusion/transport_coefficients.py) | `electron_drift()`、`electron_mobility()`、`_tangential_faces()`、`calculate_transport_coefficients(state, config)` | 各面で電場強度・移動度・速度を評価し、中心の拡散係数 `de` も準備します。面速度は輸送、面移動度は誘電緩和へ渡します。 |
-| [fluxes.py](streamer_drift_diffusion/fluxes.py) | `face_transport()`、`nele_flow()` | 有限体積・一次上流法で電子密度 `ne` を更新します。時間発展で使う `nele_flow()` は全セル面の輸送量を更新前の密度から計算し、体積・面積係数を使って収支を取ります。 |
+| [transport.py](streamer_drift_diffusion/transport.py) | `ElectronTransport`、`transport_rates()`、`diffusion_rates()` | FiPyの円筒格子・陽的上流／拡散項で`ne`を更新します。半セル吸収の損失項から3区分の流出数を返します。面の率はCFL評価にも使います。 |
 | [reactions.py](streamer_drift_diffusion/reactions.py) | `calculate_reaction_coefficients()`、`apply_reactions()` | セル中心の電場強度から現行の速度式と反応係数式を評価して `k1`～`k3` を求めます。輸送後の密度へ反応と背景電離を適用し、電子・中性粒子・正負イオンを更新します。 |
 | [output.py](streamer_drift_diffusion/output.py) | `write_c_vector()`、`write_c_matrix()`、`write_step_output()`、`AdaptiveOutput`、`load_output_times()` | 座標と物理量をC／Julia互換CSVへ保存します。適応出力の設定・実時刻・刻み履歴・停止診断と、描画用の時刻読み込みも担当します。 |
 | [_acceleration.py](streamer_drift_diffusion/_acceleration.py) | `njit`、`prange`、`NUMBA_AVAILABLE` | Numbaが使える場合にPoisson反復と基礎電位計算をJITコンパイルします。Poissonでは行を並列処理します。未導入時、または環境変数 `STREAMER_DISABLE_NUMBA=1` の場合はPython関数と `range` で実行します。 |
@@ -270,13 +275,13 @@ streamer_python/
 
 以下の詳細ツリーは**固定刻みの互換モード**です。適応モードは上記の「適応モードの呼び出し順」を参照してください。
 
-以下では `ファイル名.py::関数名()` を「そのファイルに定義された関数」、`ファイル名.py::クラス名(...)` を「そのクラスのインスタンス生成」として表します。この表記は説明用で、Pythonの呼び出し構文ではありません。`bin/run.py` とNotebookを除き、ファイルは全て `streamer_drift_diffusion/` 内にあります。
+以下では `ファイル名.py::関数名()` を「そのファイルに定義された関数」、`ファイル名.py::クラス名(...)` を「そのクラスのインスタンス生成」として表します。この表記は説明用で、Pythonの呼び出し構文ではありません。Notebookを除き、ファイルは全て `streamer_drift_diffusion/` 内にあります。
 
 #### 1. 実行入口から時間発展の開始まで
 
 | 実行方法 | 呼び出されるファイル・関数・クラスの順序 |
 |---|---|
-| `python bin/run.py` | `bin/run.py` → `__main__.py::main()` → `simulation_types.py::SimulationConfig(...)` → `simulation.py::run_simulation(config, ...)` |
+| `python -m streamer_drift_diffusion` | `__main__.py::main()` → `simulation_types.py::SimulationConfig(...)` → `simulation.py::run_simulation(config, ...)` |
 | `python -m streamer_drift_diffusion` | `__main__.py::main()` → `simulation_types.py::SimulationConfig(...)` → `simulation.py::run_simulation(config, ...)` |
 | インストール後の `streamer-python` | `pyproject.toml` のCLI登録 → `__main__.py::main()` → `simulation_types.py::SimulationConfig(...)` → `simulation.py::run_simulation(config, ...)` |
 | `run_streamer.ipynb` / Pythonコード | `__init__.py` 経由で公開APIを読み込み → `simulation_types.py::SimulationConfig(...)` → `simulation.py::run_simulation(config, ...)` |
@@ -355,15 +360,15 @@ simulation.py::advance_step(state, config, time, waveform=waveform, ...)
 │  └─ 全面の電子速度state.vex・vey [m/s]と中心state.de [m²/s]を更新
 ├─ reactions.py::calculate_reaction_coefficients(state)
 │  └─ 中心abs_eから速度の大きさと反応係数state.k1～k3を更新
-├─ fluxes.py::nele_flow(state.ne, state.vex, state.vey, config.dt, ...)
-│  └─ 全セル面の輸送量を求め、電子密度state.neを移流更新
+├─ transport.py::ElectronTransport.step(state, config.dt)
+│  └─ FiPyの気体間面項と半セル吸収項で電子密度state.neを移流拡散更新
 └─ reactions.py::apply_reactions(state, config)
    └─ 移流後の電子密度を使い、反応・背景電離で各粒子密度を更新
 ```
 
 このツリーは `run_simulation()` の通常経路です。`advance_step()` や `calculate_potential()` を単独で呼び、impulseモードで `waveform=None` を渡した場合は、`voltage_waveforms.py::applied_voltage()` 内で `load_voltage_waveform()` → `VoltageWaveform(...)` も呼ばれます。
 
-`transport_coefficients.py::electron_drift()` と `fluxes.py::face_transport()` は、この時間発展経路からは呼ばれません。配列版の `calculate_transport_coefficients()` と `nele_flow()` が、それぞれの計算を直接行います。また、`_acceleration.py` の `njit` は `electrostatics.py` の関数定義時に適用されるデコレータで、各stepの独立した計算処理ではありません。
+`transport_coefficients.py::electron_drift()`は、この時間発展経路からは呼ばれず、配列版の`calculate_transport_coefficients()`を使います。`_acceleration.py`の`njit`は`electrostatics.py`の関数定義時に適用されるデコレータで、各stepの独立した計算処理ではありません。
 
 #### 4. step出力・時刻更新・最終状態の返却
 
@@ -453,6 +458,7 @@ CSVを読むNotebookは、設定セルの `INPUT_DIR` または `OUTPUT_DIR` を
 | [tests/test_simulation.py](tests/test_simulation.py) | 初期状態、Poisson既知解、境界輸送、電荷保存、波形、CSVなどの単体テスト |
 | [tests/test_grid_domain.py](tests/test_grid_domain.py) | 電極位置の独立性、体積、電極境界、離散直接解、電子吸収収支、試行棄却時の流出量復元、マスク出力 |
 | [tests/test_diffusion.py](tests/test_diffusion.py) | 面係数・吸収境界、合算CFL、粒子収支、棄却時の復元、Gaussian格子収束、時間精度、固定刻み停止、Config・CLI・履歴 |
+| [tests/test_fipy_transport.py](tests/test_fipy_transport.py) | 円筒セル対応、調和平均の独立解、半セル吸収、速度反転・D更新、ゼロ面の厳格数値検査、反応棄却後のFiPy旧値復元、非有限解の未反映 |
 | [tests/test_staggered.py](tests/test_staggered.py) | 中心・全面の配置、既知電場、接線成分補間、離散Gauss則、電極吸収、外端流束、面移動度の時間制約、中心CSV、停止時の面配列保存 |
 | [tests/test_rb_sor.py](tests/test_rb_sor.py) | RB更新順序に関連する離散解・電場、奇数格子と境界、チャンク間の反復継続、非有限値検出、1/2スレッドの計算結果一致 |
 | [tests/test_timestepping.py](tests/test_timestepping.py) | 刻み制約、背景供給率、失敗時の復元、実時刻出力、停止条件、描画用時刻対応表の検証 |

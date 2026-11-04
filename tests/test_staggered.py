@@ -10,7 +10,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
 from streamer_drift_diffusion.electrostatics import calculate_electric_field, discretization
-from streamer_drift_diffusion.fluxes import face_areas, nele_flow, transport_rates
+from streamer_drift_diffusion.transport import face_areas, ElectronTransport, transport_rates
 from streamer_drift_diffusion.reactions import calculate_reaction_coefficients
 from streamer_drift_diffusion.simulation import prepare_step
 from streamer_drift_diffusion.simulation_types import molecular_density
@@ -145,8 +145,7 @@ class StaggeredTests(unittest.TestCase):
                         -state.mobility_z[:, 1:-1][face_z]*state.ez_face[:, 1:-1][face_z]*scale)
         state.ne[:] = 1e15*gas
         initial = np.sum(state.ne*state.volume)*2*np.pi
-        losses = nele_flow(state.ne, state.vex, state.vey, .2*transport_limit(state, config),
-                           state.volume, state.sr, state.sz, gas)
+        losses = ElectronTransport(state, config.delta).step(state, .2*transport_limit(state, config))
         self.assertGreater(losses[0], 0.)
         self.assertAlmostEqual((np.sum(state.ne*state.volume)*2*np.pi+losses.sum())/initial, 1., places=13)
 
@@ -159,21 +158,18 @@ class StaggeredTests(unittest.TestCase):
         state.vex[-1] = 2.
         state.vey[:, -1] = 3.
         initial = np.sum(state.ne*state.volume)*2*np.pi
-        losses = nele_flow(state.ne, state.vex, state.vey, .01, state.volume, state.sr, state.sz)
+        losses = ElectronTransport(state, config.delta).step(state, .01)
         ar, az = face_areas(state.sr, state.sz)
         expected = .01*(2*np.sum(ar[-1]) + 3*np.sum(az[:, -1]))*2*np.pi
         self.assertAlmostEqual(losses[2], expected)
         self.assertAlmostEqual(np.sum(state.ne*state.volume)*2*np.pi+losses.sum(), initial)
 
-    def test_legacy_transport_arrays_match_explicit_complete_faces(self):
+    def test_incomplete_transport_face_arrays_are_rejected(self):
         state = initialize_simulation(self.config())
         rng = np.random.default_rng(12)
         vr, vz = rng.normal(size=state.ne.shape), rng.normal(size=state.ne.shape)
-        old = transport_rates(vr, vz, state.sr, state.sz)
-        full = transport_rates(np.concatenate((vr, vr[-1:])),
-            np.concatenate((vz, vz[:, -1:]), axis=1), state.sr, state.sz)
-        for left, right in zip(old, full):
-            assert_array_equal(left, right)
+        with self.assertRaisesRegex(ValueError, 'face shapes'):
+            transport_rates(vr, vz, state.sr, state.sz)
         with self.assertRaises(ValueError):
             transport_rates(np.zeros((2, 2)), vz, state.sr, state.sz)
 

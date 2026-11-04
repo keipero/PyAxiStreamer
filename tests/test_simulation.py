@@ -8,7 +8,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import (
     SimulationConfig, SimulationState, initialize_simulation, run_simulation,
-    hyperbolic_curve, poisson_calc, nele_flow, load_voltage_waveform, applied_voltage, discretization,
+    hyperbolic_curve, poisson_calc, ElectronTransport, load_voltage_waveform, applied_voltage, discretization,
 )
 from streamer_drift_diffusion.output import write_c_matrix
 from streamer_drift_diffusion.reactions import apply_reactions
@@ -70,17 +70,21 @@ class SimulationTests(unittest.TestCase):
             self.assertLess(iterations[1], iterations[0])
 
     def test_transport_top_boundary(self):
-        m = np.array([[1., 2.], [3., 4.]])
-        losses = nele_flow(m, np.zeros((2, 2)), np.array([[1., 2.], [1., 2.]]), .1,
-                  np.ones((2, 2)), np.zeros((2, 2)), np.ones((2, 2)))
-        assert_allclose(m, [[.8, 1.8], [2.4, 3.8]])
-        self.assertAlmostEqual(losses.sum(), 1.2 * 2*np.pi)
+        config = self.small_config(nr=2, nz=2, delta=1., electrode_gap=100.)
+        state = initialize_simulation(config)
+        state.ne[:] = [[1., 2.], [3., 4.]]
+        state.vey[:] = [1., 2., 2.]
+        losses = ElectronTransport(state, config.delta).step(state, .1)
+        assert_allclose(state.ne, [[.8, 1.8], [2.4, 3.8]])
+        self.assertAlmostEqual(losses.sum(), 1.4 * 2*np.pi)
 
     def test_transport_outer_boundary(self):
-        m = np.array([[1., 2.], [3., 4.]])
-        nele_flow(m, np.array([[0., 0.], [2., 2.]]), np.zeros((2, 2)), .1,
-                  np.ones((2, 2)), np.ones((2, 2)), np.zeros((2, 2)))
-        assert_allclose(m, [[.8, 1.6], [2.6, 3.6]])
+        config = self.small_config(nr=2, nz=2, delta=1., electrode_gap=100.)
+        state = initialize_simulation(config)
+        state.ne[:] = [[1., 2.], [3., 4.]]
+        state.vex[:] = [[0., 0.], [2., 2.], [2., 2.]]
+        ElectronTransport(state, config.delta).step(state, .1)
+        assert_allclose(state.ne, [[.6, 1.2], [7/3, 3.2]])
 
     def test_reaction_charge_conservation_and_background(self):
         config = self.small_config()

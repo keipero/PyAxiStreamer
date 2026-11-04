@@ -7,7 +7,7 @@ name = "streamer-drift-diffusion"
 version = "0.1.0"
 description = "Python translation of the axisymmetric Julia streamer simulation"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.26"]
+dependencies = ["numpy>=1.26", "fipy>=4.0.3,<4.1", "scipy>=1.11"]
 
 [project.optional-dependencies]
 fast = ["numba>=0.61"]

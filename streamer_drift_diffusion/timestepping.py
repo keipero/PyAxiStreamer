@@ -66,7 +66,7 @@ def validate_densities(state):
 
 def diffusion_loss(state, config):
     """拡散更新のセルごとの損失対角係数 [m^3/s]。拡散なしでは0を返す。"""
-    from .fluxes import diffusion_rates
+    from .transport import diffusion_rates
     coefficient = getattr(state, 'de', None)
     if coefficient is None or not np.any(coefficient):
         return 0.
@@ -87,7 +87,7 @@ def transport_limit(state, config):
     別々の上限の最小値だけでは同時更新の非負性を保証できないため、
     実際の全セル面の流出係数を合算する。拡散0では従来の移流CFLになる。
     """
-    from .fluxes import transport_rates
+    from .transport import transport_rates
     radial, axial = transport_rates(state.vex, state.vey, state.sr, state.sz)
     loss = (np.maximum(-radial[:-1], 0.) + np.maximum(radial[1:], 0.)
             + np.maximum(-axial[:, :-1], 0.) + np.maximum(axial[:, 1:], 0.))
@@ -148,7 +148,7 @@ def timestep_limits(state, config):
     return TimestepLimits(**values, dt=dt, limiting=limiting)
 
 
-def try_density_step(state, config, dt):
+def try_density_step(state, config, dt, *, transport=None):
     """準備済みの電場・係数を使って更新し、失敗した試行を完全に復元する。
 
     Returns:
@@ -159,17 +159,17 @@ def try_density_step(state, config, dt):
         重ねず、反応の割合上限と誘電緩和時間そのものを超えたら拒否する。
         復元するのは密度だけでよい。試行中に電場・係数は再計算しない。
     """
-    from .fluxes import nele_flow
+    from .transport import ElectronTransport
     from .reactions import apply_reactions
 
+    transport = ElectronTransport(state, config.delta) if transport is None else transport
     saved = {name: getattr(state, name).copy() for name in DENSITY_NAMES}
     for retries in range(config.max_step_retries + 1):
         try:
             with np.errstate(over="raise", invalid="raise", divide="raise"):
                 if np.any(state.de) and dt > transport_limit(state, config)/config.dt_cfl_number * (1+1e-12):
                     raise TimestepError("explicit drift-diffusion constraint")
-                losses = nele_flow(state.ne, state.vex, state.vey, dt, state.volume, state.sr, state.sz,
-                                   state.gas_mask, state.de, config.delta)
+                losses = transport.step(state, dt)
                 validate_densities(state)
                 # 開始時に安全係数を適用済み。試行後は元の制約を越えた場合に拒否する。
                 # 両端へ同じ安全係数を要求すると微小な密度増加だけで毎回半減してしまう。
