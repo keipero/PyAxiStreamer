@@ -1,5 +1,9 @@
 # Python移植の検証結果
 
+2026-11-04のFiPy輸送への移行と検証結果は
+[FiPy移行方針・検証結果](FIPY_MIGRATION_PLAN.md)を参照してください。
+以下は移行前のPython版に関する履歴です。
+
 検証日: 2026-10-27（日本時間）
 
 環境: Python 3.14、NumPy 2.4.4、Numba 0.66.0、Julia 1.12.6。

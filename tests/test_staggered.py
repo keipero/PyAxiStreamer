@@ -9,19 +9,22 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
-from streamer_drift_diffusion.electrostatics import calculate_electric_field, discretization
-from streamer_drift_diffusion.fluxes import face_areas, nele_flow, transport_rates
+from streamer_drift_diffusion.electrostatics import calculate_electric_field
+from streamer_drift_diffusion.transport import ElectronTransport
+from poisson_reference import dense_poisson
 from streamer_drift_diffusion.reactions import calculate_reaction_coefficients
 from streamer_drift_diffusion.simulation import prepare_step
 from streamer_drift_diffusion.simulation_types import molecular_density
-from streamer_drift_diffusion.timestepping import TimestepError, dielectric_limit, transport_limit
+from streamer_drift_diffusion.timestepping import (
+    TimestepError, dielectric_limit,
+)
 from streamer_drift_diffusion.transport_coefficients import calculate_transport_coefficients, electron_drift
 
 
 class StaggeredTests(unittest.TestCase):
     def config(self, **kwargs):
         return replace(SimulationConfig(nr=6, nz=8, delta=.1, electrode_gap=2.,
-            voltage=1., nmax=0., background_ionization=0., max_step=0), **kwargs)
+            voltage=1., nmax=0., background_ionization=0., t_end=1e-12), **kwargs)
 
     def prescribe(self, state, config, potential):
         """既知の電位 [Td*m]と境界値を与え、場を計算する。"""
@@ -110,19 +113,12 @@ class StaggeredTests(unittest.TestCase):
         voltage = -3.
         state.phi[~state.gas_mask] = voltage
         calculate_electric_field(state, config, voltage=voltage)
-        ar, az = face_areas(state.sr, state.sz)
+        ar, az = state.grid.areas
         flux_r, flux_z = state.er_face*ar, state.ez_face*az
         divergence = (flux_r[1:]-flux_r[:-1]+flux_z[:, 1:]-flux_z[:, :-1])
         divergence *= molecular_density(config)*1e-21/state.volume
-        source = discretization(state.rh, state.zh, state.p1, state.p2, state.p3,
-            state.p4, state.p5, gas_mask=state.gas_mask,
-            radial_boundary=state.radial_boundary, upper_boundary=state.upper_boundary)
-        expected = np.divide(state.phi, state.p1, out=np.zeros_like(state.phi), where=state.gas_mask)
-        expected[:, :-1] += state.p2[:, :-1]*state.phi[:, 1:]
-        expected[:, 1:] += state.p5[:, 1:]*state.phi[:, :-1]
-        expected[1:] += state.p3[1:]*state.phi[:-1]
-        expected[:-1] += state.p4[:-1]*state.phi[1:]
-        expected -= voltage*source
+        matrix, rhs = dense_poisson(state, voltage)
+        expected = (matrix@state.phi.ravel()-rhs).reshape(state.phi.shape)
         assert_allclose(divergence[state.gas_mask], expected[state.gas_mask], rtol=2e-13, atol=1e-11)
 
     def test_electrode_normal_absorption_and_zero_tangential_field(self):
@@ -145,8 +141,9 @@ class StaggeredTests(unittest.TestCase):
                         -state.mobility_z[:, 1:-1][face_z]*state.ez_face[:, 1:-1][face_z]*scale)
         state.ne[:] = 1e15*gas
         initial = np.sum(state.ne*state.volume)*2*np.pi
-        losses = nele_flow(state.ne, state.vex, state.vey, .2*transport_limit(state, config),
-                           state.volume, state.sr, state.sz, gas)
+        transport = ElectronTransport(state, config.delta).prepare(state)
+        dt = .2*config.dt_cfl_number*transport.transport_limit
+        losses = transport.step(state, dt, prepared=True)
         self.assertGreater(losses[0], 0.)
         self.assertAlmostEqual((np.sum(state.ne*state.volume)*2*np.pi+losses.sum())/initial, 1., places=13)
 
@@ -159,23 +156,20 @@ class StaggeredTests(unittest.TestCase):
         state.vex[-1] = 2.
         state.vey[:, -1] = 3.
         initial = np.sum(state.ne*state.volume)*2*np.pi
-        losses = nele_flow(state.ne, state.vex, state.vey, .01, state.volume, state.sr, state.sz)
-        ar, az = face_areas(state.sr, state.sz)
+        losses = ElectronTransport(state, config.delta).step(state, .01)
+        ar, az = state.grid.areas
         expected = .01*(2*np.sum(ar[-1]) + 3*np.sum(az[:, -1]))*2*np.pi
         self.assertAlmostEqual(losses[2], expected)
         self.assertAlmostEqual(np.sum(state.ne*state.volume)*2*np.pi+losses.sum(), initial)
 
-    def test_legacy_transport_arrays_match_explicit_complete_faces(self):
+    def test_incomplete_transport_face_arrays_are_rejected(self):
         state = initialize_simulation(self.config())
         rng = np.random.default_rng(12)
         vr, vz = rng.normal(size=state.ne.shape), rng.normal(size=state.ne.shape)
-        old = transport_rates(vr, vz, state.sr, state.sz)
-        full = transport_rates(np.concatenate((vr, vr[-1:])),
-            np.concatenate((vz, vz[:, -1:]), axis=1), state.sr, state.sz)
-        for left, right in zip(old, full):
-            assert_array_equal(left, right)
+        with self.assertRaisesRegex(ValueError, 'face shapes'):
+            state.grid.pack_faces(vr, vz)
         with self.assertRaises(ValueError):
-            transport_rates(np.zeros((2, 2)), vz, state.sr, state.sz)
+            state.grid.pack_faces(np.zeros((2, 2)), vz)
 
     def test_dielectric_limit_uses_actual_face_mobility_and_neighbor_density(self):
         config = self.config()
@@ -229,7 +223,7 @@ class StaggeredTests(unittest.TestCase):
                 assert_allclose(saved, values, rtol=6e-7, atol=1e-12)
 
     def test_failure_snapshot_contains_complete_face_arrays(self):
-        config = self.config(adaptive_timestep=True, t_end=3e-12, adaptive_max_steps=1)
+        config = self.config(adaptive_timestep=True, t_end=3e-12, max_steps=1)
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TimestepError):
                 run_simulation(config, output_dir=directory, verbose=False)

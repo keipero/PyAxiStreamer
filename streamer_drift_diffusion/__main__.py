@@ -6,10 +6,35 @@ from .simulation import run_simulation
 
 
 def main(argv=None):
+    """コマンドライン引数を設定へ変換し、シミュレーションを実行する。
+
+    Parameters
+    ----------
+    argv : list of str, optional
+        引数列。Noneならsys.argv[1:]を使用する。
+
+    Returns
+    -------
+    int
+        正常終了時は0。
+
+    Raises
+    ------
+    SystemExit
+        --help、未知のオプション、または実行時エラーをargparseが報告する場合。
+
+    Notes
+    -----
+    --t-end、--output-interval、--max-stepsは両モード共通。
+    --adaptive-timestepを指定すると安全刻みの選択と再試行を有効にする。
+
+    Examples
+    --------
+    >>> main(['--nr', '2', '--nz', '3', '--t-end', '0', '--no-output', '--quiet'])
+    0
+    """
     defaults = SimulationConfig()
     parser = argparse.ArgumentParser(description="Axisymmetric streamer drift/reaction simulation")
-    parser.add_argument("--steps", type=int, default=defaults.max_step, help="Last step number; includes step 0")
-    parser.add_argument("--write-every", type=int, default=defaults.write_every)
     parser.add_argument("--output", default=str(PROJECT_ROOT / "outputdata"))
     parser.add_argument("--voltage-mode", choices=("dc", "impulse"), default=defaults.voltage_mode)
     parser.add_argument("--voltage", type=float, default=defaults.voltage)
@@ -18,16 +43,15 @@ def main(argv=None):
     parser.add_argument("--waveform", default=defaults.voltage_waveform_file)
     parser.add_argument("--nr", type=int, default=defaults.nr)
     parser.add_argument("--nz", type=int, default=defaults.nz)
+    parser.add_argument("--poisson-tolerance", type=float, default=defaults.poisson_tolerance, help="Relative Poisson RHS residual tolerance")
     parser.add_argument("--delta", type=float, default=defaults.delta, help="Uniform cell spacing [m]")
-    parser.add_argument("--poisson-omega", type=float, default=defaults.poisson_omega)
-    parser.add_argument("--num-threads", type=int, default=defaults.num_threads, help="Numba threads (serial without Numba)")
     parser.add_argument("--electrode-gap", type=float, default=defaults.electrode_gap, help="Electrode tip height above ground [m]")
     parser.add_argument("--electron-diffusion", type=float, default=defaults.electron_diffusion,
                         help="Constant verification coefficient [m^2/s]; 0 disables diffusion")
     parser.add_argument("--no-output", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--adaptive-timestep", action="store_true", default=defaults.adaptive_timestep, help="Use adaptive explicit timesteps")
-    parser.add_argument("--t-end", type=float, default=defaults.t_end, help="Adaptive end time [s], required with --adaptive-timestep")
+    parser.add_argument("--t-end", type=float, default=defaults.t_end, help="End time [s], common to fixed and adaptive modes")
     parser.add_argument("--dt", type=float, default=defaults.dt, help="Fixed dt / reference dt for background supply [s]")
     parser.add_argument("--dt-max", type=float, default=defaults.dt_max, help="Maximum adaptive dt [s], defaults to --dt")
     parser.add_argument("--dt-min", type=float, default=defaults.dt_min)
@@ -36,20 +60,20 @@ def main(argv=None):
     parser.add_argument("--dt-chemistry-fraction", type=float, default=defaults.dt_chemistry_fraction)
     parser.add_argument("--dt-growth-factor", type=float, default=defaults.dt_growth_factor)
     parser.add_argument("--max-step-retries", type=int, default=defaults.max_step_retries)
-    parser.add_argument("--adaptive-max-steps", type=int, default=defaults.adaptive_max_steps)
-    parser.add_argument("--output-interval", type=float, default=defaults.output_interval, help="Adaptive output interval [s]")
+    parser.add_argument("--max-steps", type=int, default=defaults.max_steps)
+    parser.add_argument("--output-interval", type=float, default=defaults.output_interval, help="Output interval [s]")
     args = parser.parse_args(argv)
-    config = SimulationConfig(max_step=args.steps, write_every=args.write_every,
+    config = SimulationConfig(
         voltage_mode=args.voltage_mode, voltage=args.voltage,
         impulse_peak_voltage=args.impulse_peak, impulse_time_scale=args.impulse_time_scale,
-        voltage_waveform_file=args.waveform, nr=args.nr, nz=args.nz, poisson_omega=args.poisson_omega,
-        num_threads=args.num_threads, electrode_gap=args.electrode_gap, delta=args.delta,
-        electron_diffusion=args.electron_diffusion,
+        voltage_waveform_file=args.waveform, nr=args.nr, nz=args.nz,
+        electrode_gap=args.electrode_gap, delta=args.delta,
+        electron_diffusion=args.electron_diffusion, poisson_tolerance=args.poisson_tolerance,
         adaptive_timestep=args.adaptive_timestep, t_end=args.t_end, dt=args.dt,
         dt_max=args.dt_max, dt_min=args.dt_min, dt_safety_factor=args.dt_safety_factor,
         dt_cfl_number=args.dt_cfl_number, dt_chemistry_fraction=args.dt_chemistry_fraction,
         dt_growth_factor=args.dt_growth_factor, max_step_retries=args.max_step_retries,
-        adaptive_max_steps=args.adaptive_max_steps, output_interval=args.output_interval)
+        max_steps=args.max_steps, output_interval=args.output_interval)
     try:
         run_simulation(config, output_dir=args.output, write_output=not args.no_output, verbose=not args.quiet)
     except (ValueError, OSError, RuntimeError) as exc:

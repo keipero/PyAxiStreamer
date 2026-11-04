@@ -17,12 +17,12 @@ def main():
     parser.add_argument("--julia", default="julia")
     args = parser.parse_args()
     cases = {
-        "small_dc": SimulationConfig(nr=12, nz=10, max_step=20, z0=70e-6, cathode_radius=30e-6),
-        "small_impulse": SimulationConfig(nr=12, nz=10, max_step=20, z0=70e-6,
+        "small_dc": SimulationConfig(nr=12, nz=10, t_end=21e-12, z0=70e-6, cathode_radius=30e-6),
+        "small_impulse": SimulationConfig(nr=12, nz=10, t_end=21e-12, z0=70e-6,
             cathode_radius=30e-6, voltage_mode="impulse", impulse_time_scale=2.),
-        "small_negative": SimulationConfig(nr=12, nz=10, max_step=20, z0=70e-6,
-            cathode_radius=30e-6, voltage=-4000., poisson_omega=1.),
-        "standard_100": SimulationConfig(max_step=100),
+        "small_negative": SimulationConfig(nr=12, nz=10, t_end=21e-12, z0=70e-6,
+            cathode_radius=30e-6, voltage=-4000.),
+        "standard_100": SimulationConfig(t_end=101e-12),
     }
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -33,6 +33,8 @@ def main():
             worst_scaled_error = 0.
             for field in fields(SimulationState):
                 actual = getattr(state, field.name)
+                if not isinstance(actual, np.ndarray):
+                    continue
                 expected = np.loadtxt(root / "julia" / name / f"state_{field.name}.txt").reshape(actual.shape)
                 # 電荷中性の大数差では丸め誤差が増幅されるため配列尺度で正規化。
                 scale = max(float(np.max(np.abs(expected))), 1e-300)

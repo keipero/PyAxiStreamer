@@ -3,22 +3,20 @@ import csv
 from dataclasses import replace
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
-from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation, poisson_calc
+from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
 from streamer_drift_diffusion.simulation import prepare_step, _same_time
-from streamer_drift_diffusion.fluxes import nele_flow
+from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.reactions import apply_reactions
 from streamer_drift_diffusion.output import load_output_times
 from streamer_drift_diffusion.transport_coefficients import electron_mobility
 from streamer_drift_diffusion.timestepping import (
-    DENSITY_NAMES, TimestepError, chemistry_limit, dielectric_limit,
-    timestep_limits, transport_limit, try_density_step,
+    DENSITY_NAMES, TimestepError, chemistry_limit, dielectric_limit, timestep_limits, advance_density,
 )
 
 
@@ -30,17 +28,20 @@ class AdaptiveTests(unittest.TestCase):
         return replace(base, **kwargs)
 
     def test_transport_bound_uses_all_outgoing_faces(self):
-        state = SimpleNamespace(vex=np.zeros((3, 3)), vey=np.zeros((3, 3)),
-                                sr=np.ones((3, 3)), sz=np.ones((3, 3)), volume=np.ones((3, 3)))
-        state.vex[1, 1], state.vex[2, 1] = -2., 3.
-        state.vey[1, 1], state.vey[1, 2] = -4., 5.
         config = self.config()
-        dt = transport_limit(state, config)
+        state = initialize_simulation(config)
+        volume = state.volume[1, 1]
+        state.vex[1, 1] = -2.*volume/state.sr[1, 1]
+        state.vex[2, 1] = 3.*volume/state.sr[2, 1]
+        state.vey[1, 1] = -4.*volume/state.sz[1, 1]
+        state.vey[1, 2] = 5.*volume/state.sz[1, 1]
+        transport = ElectronTransport(state, config.delta).prepare(state)
+        dt = config.dt_cfl_number*transport.transport_limit
         self.assertAlmostEqual(dt, config.dt_cfl_number / 14.)
         for seed in range(5):
-            density = np.random.default_rng(seed).random((3, 3))
-            nele_flow(density, state.vex, state.vey, dt, state.volume, state.sr, state.sz)
-            self.assertTrue(np.all(density >= 0))
+            state.ne[:] = np.random.default_rng(seed).random(state.ne.shape)
+            transport.step(state, dt, prepared=True)
+            self.assertTrue(np.all(state.ne >= 0))
 
     def test_dielectric_zero_field_is_not_zero_conductivity(self):
         config = self.config()
@@ -88,15 +89,15 @@ class AdaptiveTests(unittest.TestCase):
         state = initialize_simulation(config)
         calls = []
 
-        def fail_first(*args):
-            calls.append(args[3])
+        def fail_first(operator, current, dt, *, prepared=False):
+            calls.append(dt)
             if len(calls) == 1:
                 state.ne[:] = -1.
                 state.n2p[:] = -10.
             return np.zeros(3)
 
-        with patch('streamer_drift_diffusion.fluxes.nele_flow', side_effect=fail_first):
-            dt, retries = try_density_step(state, config, config.dt)
+        with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail_first):
+            dt, retries = advance_density(state, config, config.dt)
         self.assertEqual(retries, 1)
         self.assertEqual(dt, config.dt / 2)
         assert_array_equal(state.ne, np.full_like(state.ne, config.background_ionization / 2))
@@ -107,13 +108,13 @@ class AdaptiveTests(unittest.TestCase):
         state = initialize_simulation(config)
         original = {name: getattr(state, name).copy() for name in DENSITY_NAMES}
 
-        def fail(*args):
+        def fail(operator, current, dt, *, prepared=False):
             state.ne[:] = -1.
             state.o2[:] = 0.
 
-        with patch('streamer_drift_diffusion.fluxes.nele_flow', side_effect=fail):
+        with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail):
             with self.assertRaises(TimestepError):
-                try_density_step(state, config, config.dt)
+                advance_density(state, config, config.dt)
         for name in DENSITY_NAMES:
             assert_array_equal(getattr(state, name), original[name])
 
@@ -126,7 +127,7 @@ class AdaptiveTests(unittest.TestCase):
         state.n2p[:] = state.ne
         state.k1[:] = 1e-18
         dt = config.dt_safety_factor * dielectric_limit(state, config)
-        actual, retries = try_density_step(state, config, dt)
+        actual, retries = advance_density(state, config, dt)
         self.assertEqual(retries, 0)
         self.assertEqual(actual, dt)
 
@@ -134,7 +135,8 @@ class AdaptiveTests(unittest.TestCase):
         config = self.config(dt_max=2e-12, dt_min=0.4e-12)
         with tempfile.TemporaryDirectory() as directory:
             state = run_simulation(config, output_dir=directory, verbose=False)
-            rows = list(csv.DictReader((Path(directory) / 'times.csv').open()))
+            with (Path(directory) / 'times.csv').open() as times_stream:
+                rows = list(csv.DictReader(times_stream))
             times = [float(row['time_s']) for row in rows]
             assert_allclose(times, [0., 1.3e-12, 2.6e-12, 3.5e-12], rtol=1e-15, atol=0.)
             for row in rows:
@@ -181,7 +183,7 @@ class AdaptiveTests(unittest.TestCase):
 
     def test_accepted_step_guard_stops_instead_of_returning_early(self):
         with self.assertRaises(TimestepError):
-            run_simulation(self.config(adaptive_max_steps=1), write_output=False, verbose=False)
+            run_simulation(self.config(max_steps=1), write_output=False, verbose=False)
 
     def test_dense_plasma_shrinks_dt_and_obeys_all_limits(self):
         config = self.config(voltage=500., nmax=1e22, t_end=1e-12)
@@ -202,7 +204,7 @@ class AdaptiveTests(unittest.TestCase):
                        {'dt_min': 2e-12}, {'dt_safety_factor': 0.}, {'dt_cfl_number': 1.1},
                        {'dt_chemistry_fraction': 0.}, {'output_interval': 0.},
                        {'dt_growth_factor': .9}, {'max_step_retries': -1},
-                       {'adaptive_max_steps': True}, {'poisson_max_iterations': 0},
+                       {'max_steps': True}, {'poisson_tolerance': 0},
                        {'nitrogen_fraction': .7}, {'background_ionization': -1.}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 initialize_simulation(self.config(**kwargs))
@@ -223,7 +225,8 @@ class AdaptiveTests(unittest.TestCase):
                                  voltage_waveform_file=str(path), background_ionization=0.)
             output = Path(directory) / 'output'
             run_simulation(config, output_dir=output, verbose=False)
-            rows = list(csv.DictReader((output / 'timestep_history.csv').open()))
+            with (output / 'timestep_history.csv').open() as history:
+                rows = list(csv.DictReader(history))
             times = np.array([float(row['time_s']) for row in rows])
             self.assertTrue(np.any(np.isclose(times, 1e-12, rtol=1e-14, atol=0.)))
             self.assertTrue(np.any(np.isclose(times, 2e-12, rtol=1e-14, atol=0.)))
@@ -296,11 +299,11 @@ class AdaptiveTests(unittest.TestCase):
                     self.assertTrue(np.all(getattr(state, name) >= 0))
                 self.assertTrue(np.all(np.isfinite(state.abs_e)))
 
-    def test_poisson_iteration_cap(self):
+    def test_poisson_nonfinite_source_is_rejected(self):
         state = initialize_simulation(self.config())
-        with self.assertRaises(RuntimeError):
-            poisson_calc(state.pphi, np.ones_like(state.ne), state.p1, state.p2, state.p3,
-                         state.p4, state.p5, max_iterations=1, tolerance=1e-15, verbose=False)
+        with self.assertRaisesRegex(RuntimeError, 'nonfinite'):
+            state.poisson.solve(np.full_like(state.ne, np.nan), 0.)
+
 
 
 if __name__ == '__main__':
