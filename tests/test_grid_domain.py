@@ -15,7 +15,9 @@ from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.grid import initialize_grid
 from poisson_reference import dense_poisson
 from streamer_drift_diffusion.reactions import apply_reactions
-from streamer_drift_diffusion.timestepping import transport_limit, chemistry_limit, dielectric_limit, advance_density
+from streamer_drift_diffusion.timestepping import (
+    chemistry_limit, dielectric_limit, advance_density,
+)
 from streamer_drift_diffusion.simulation_types import gap_length
 from streamer_drift_diffusion.simulation import prepare_step
 
@@ -78,12 +80,12 @@ class GridDomainTests(unittest.TestCase):
             state.ne[:] = 1e18 * state.gas_mask
             state.vex[:] = 2e4
             state.vey[:] = sign*3e4
-            dt = transport_limit(state, config)*.5
+            transport = ElectronTransport(state, config.delta).prepare(state)
+            dt = config.dt_cfl_number*transport.transport_limit*.5
             initial = np.sum(state.ne*state.volume)*2*np.pi
             losses = np.zeros(3)
-            transport = ElectronTransport(state, config.delta)
             for _ in range(100):
-                losses += transport.step(state, dt)
+                losses += transport.step(state, dt, prepared=True)
             final = np.sum(state.ne*state.volume)*2*np.pi
             self.assertAlmostEqual((final+losses.sum())/initial, 1., places=13)
             self.assertTrue(np.all(state.ne >= 0.))
@@ -125,8 +127,8 @@ class GridDomainTests(unittest.TestCase):
 
         real_step = ElectronTransport.step
 
-        def fail_first(operator, current, dt):
-            losses = real_step(operator, current, dt)
+        def fail_first(operator, current, dt, *, prepared=False):
+            losses = real_step(operator, current, dt, prepared=prepared)
             calls.append(1)
             if len(calls) == 1:
                 state.ne[state.gas_mask] = -1.

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import math
 
 import numpy as np
+from .transport import ElectronTransport
 
 DENSITY_NAMES = ("ne", "n2", "o2", "n2p", "o2p", "om", "o2m")
 
@@ -166,114 +167,6 @@ def validate_densities(state):
             raise TimestepError(f"density inside electrode: {name}")
 
 
-def diffusion_loss(state, config):
-    """純拡散のセルごとの流出対角係数を返す。
-
-    Parameters
-    ----------
-    state : SimulationState
-        共有格子と計算配列。中心配列は(nr,nz)、面配列は方向別の全面形状。
-    config : SimulationConfig
-        物理定数、電圧、時間刻み・安定条件を保持する設定。
-
-    Returns
-    -------
-    float or ndarray, shape (nr, nz)
-        2πを省略した損失対角 [m³/s]。拡散なしなら0。
-
-    Notes
-    -----
-    state.deがNoneまたは全て0ならスカラー0。それ以外は共有面のD*A/dを両側セルへ集計する。
-    configは共通の呼出し形式のため受け取るが、現実装では直接参照しない。
-
-    Examples
-    --------
-    >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
-    >>> config = SimulationConfig(nr=2, nz=3, voltage=0., nmax=0.,
-    ...                           background_ionization=0., t_end=0.)
-    >>> state = initialize_simulation(config)
-    >>> float(diffusion_loss(state, config))
-    0.0
-    """
-    coefficient = getattr(state, 'de', None)
-    if coefficient is None or not np.any(coefficient):
-        return 0.
-    return state.grid.sum_faces(state.grid.diffusion_rates(coefficient, state.gas_mask))
-
-
-def diffusion_limit(state, config):
-    """陽的な純拡散更新の時間上限を返す。
-
-    Parameters
-    ----------
-    state : SimulationState
-        共有格子と計算配列。中心配列は(nr,nz)、面配列は方向別の全面形状。
-    config : SimulationConfig
-        物理定数、電圧、時間刻み・安定条件を保持する設定。
-
-    Returns
-    -------
-    float
-        時間上限 [s]。気体セルの拡散流出率が全て0ならmath.inf。
-
-    Notes
-    -----
-    気体セルだけで損失率/体積の最大を評価する。拡散損失が0ならmath.inf。
-    軸の面積0と境界の半セル距離を含む。
-
-    Examples
-    --------
-    >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
-    >>> config = SimulationConfig(nr=2, nz=3, voltage=0., nmax=0.,
-    ...                           background_ionization=0., t_end=0.)
-    >>> state = initialize_simulation(config)
-    >>> diffusion_limit(state, config)
-    inf
-    """
-    gas = getattr(state, 'gas_mask', np.ones_like(state.volume, dtype=bool))
-    maximum = float(np.max((diffusion_loss(state, config) / state.volume)[gas]))
-    return 1./maximum if maximum > 0 else math.inf
-
-
-def transport_limit(state, config):
-    """移流と拡散の合算流出率からCFL時間上限を返す。
-
-    Parameters
-    ----------
-    state : SimulationState
-        共有格子と計算配列。中心配列は(nr,nz)、面配列は方向別の全面形状。
-    config : SimulationConfig
-        物理定数、電圧、時間刻み・安定条件を保持する設定。
-
-    Returns
-    -------
-    float
-        時間上限 [s]。該当する損失・速度が0ならmath.inf。
-
-    Notes
-    -----
-    ドリフトと拡散の流出対角を合算してから上限を求める。
-    別々の上限の最小だけでは、同時更新の非負性を保証できない。
-    config.dt_cfl_numberを含むが、共通のdt_safety_factorはまだ掛けない。
-
-    Examples
-    --------
-    >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
-    >>> config = SimulationConfig(nr=2, nz=3, voltage=0., nmax=0.,
-    ...                           background_ionization=0., t_end=0.)
-    >>> state = initialize_simulation(config)
-    >>> transport_limit(state, config)
-    inf
-    """
-    grid = state.grid
-    rate = grid.pack_faces(state.vex, state.vey)*grid.area
-    loss = grid.sum_faces(np.maximum(rate, 0.), np.maximum(-rate, 0.))
-    loss += diffusion_loss(state, config)
-    gas = getattr(state, 'gas_mask', np.ones_like(state.volume, dtype=bool))
-    maximum = float(np.max((loss / state.volume)[gas]))
-    return config.dt_cfl_number / maximum if maximum > 0 else math.inf
-
-
 def dielectric_limit(state, config):
     """面の移動度・電子密度から誘電緩和時間の上限を返す。
 
@@ -352,7 +245,7 @@ def chemistry_limit(state, config):
     return config.dt_chemistry_fraction / maximum if maximum > 0 else math.inf
 
 
-def timestep_limits(state, config):
+def timestep_limits(state, config, *, transport=None):
     """物理上限へ安全係数と設定上限を適用し、候補刻みを返す。
 
     Parameters
@@ -361,6 +254,9 @@ def timestep_limits(state, config):
         共有格子と計算配列。中心配列は(nr,nz)、面配列は方向別の全面形状。
     config : SimulationConfig
         物理定数、電圧、時間刻み・安定条件を保持する設定。
+    transport : ElectronTransport, optional
+        再利用する輸送オブジェクト。Noneなら生成する。現在の速度・Dでprepare()を呼び、
+        求めた面係数を次のadvance_density(..., prepared=True)でも共用できる。
 
     Returns
     -------
@@ -371,6 +267,10 @@ def timestep_limits(state, config):
     ------
     TimestepError
         いずれかの物理上限がNaNまたは0以下。
+    ValueError
+        輸送の格子・電極マスク・面配列形状またはDが不正。
+    FloatingPointError
+        輸送係数の準備で非有限の面速度や不正な演算を検出。
 
     Notes
     -----
@@ -384,16 +284,22 @@ def timestep_limits(state, config):
     >>> config = SimulationConfig(nr=2, nz=3, voltage=0., nmax=0.,
     ...                           background_ionization=0., t_end=0.)
     >>> state = initialize_simulation(config)
-    >>> limits = timestep_limits(state, config)
+    >>> transport = ElectronTransport(state, config.delta)
+    >>> limits = timestep_limits(state, config, transport=transport)
     >>> limits.dt == config.dt
     True
     >>> limits.limiting
     'dt_max'
+    >>> dt, retries = advance_density(state, config, limits.dt, transport=transport, prepared=True)
+    >>> dt == config.dt, retries
+    (True, 0)
     """
-    values: dict[str, float] = {"cfl": transport_limit(state, config),
+    transport = ElectronTransport(state, config.delta) if transport is None else transport
+    transport.prepare(state)
+    values: dict[str, float] = {"cfl": config.dt_cfl_number*transport.transport_limit,
                                 "dielectric": dielectric_limit(state, config),
                                 "chemistry": chemistry_limit(state, config),
-                                "diffusion": diffusion_limit(state, config)}
+                                "diffusion": transport.diffusion_limit}
     if any(math.isnan(x) or x <= 0 for x in values.values()):
         raise TimestepError("invalid timestep constraint")
     limiting = min(values, key=lambda name: values[name])
@@ -404,7 +310,7 @@ def timestep_limits(state, config):
     return TimestepLimits(**values, dt=dt, limiting=limiting)
 
 
-def advance_density(state, config, dt, *, transport=None):
+def advance_density(state, config, dt, *, transport=None, prepared=False):
     """共通の輸送・反応更新を試み、受理した密度と流出数を反映する。
 
     Parameters
@@ -417,6 +323,9 @@ def advance_density(state, config, dt, *, transport=None):
         開始時の試行幅 [s]。固定モードではこの幅を自動縮小しない。
     transport : ElectronTransport, optional
         再利用する輸送オブジェクト。Noneならこの呼出し用に生成する。
+    prepared : bool, optional
+        Trueなら指定transportが同じstateの現在の速度・Dで準備済みであることを前提とする。
+        既定Falseでは試行前にprepare()する。再試行では同じ係数を使い、密度だけを復元する。
 
     Returns
     -------
@@ -432,6 +341,8 @@ def advance_density(state, config, dt, *, transport=None):
     ValueError
         輸送へ渡す刻み、格子・面配列・電極マスク、または拡散係数が不正。
         この例外では再試行しないため、検査済みの状態・設定を渡す。
+    FloatingPointError
+        試行前の係数準備で非有限の面速度や不正な演算を検出。この準備は再試行しない。
 
     Notes
     -----
@@ -450,18 +361,19 @@ def advance_density(state, config, dt, *, transport=None):
     >>> actual_dt == config.dt, retries
     (True, 0)
     """
-    from .transport import ElectronTransport
     from .reactions import apply_reactions
 
     transport = ElectronTransport(state, config.delta) if transport is None else transport
+    if not prepared:
+        transport.prepare(state)
     saved = {name: getattr(state, name).copy() for name in DENSITY_NAMES}
     max_retries = config.max_step_retries if config.adaptive_timestep else 0
     for retries in range(max_retries + 1):
         try:
             with np.errstate(over="raise", invalid="raise", divide="raise"):
-                if np.any(state.de) and dt > transport_limit(state, config)/config.dt_cfl_number * (1+1e-12):
+                if np.any(state.de) and dt > transport.transport_limit * (1+1e-12):
                     raise TimestepError("explicit drift-diffusion constraint")
-                losses = transport.step(state, dt)
+                losses = transport.step(state, dt, prepared=True)
                 validate_densities(state)
                 # 開始時に安全係数を適用済み。試行後は元の制約を越えた場合に拒否する。
                 # 両端へ同じ安全係数を要求すると微小な密度増加だけで毎回半減してしまう。

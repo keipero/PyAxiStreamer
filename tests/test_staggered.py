@@ -15,7 +15,9 @@ from poisson_reference import dense_poisson
 from streamer_drift_diffusion.reactions import calculate_reaction_coefficients
 from streamer_drift_diffusion.simulation import prepare_step
 from streamer_drift_diffusion.simulation_types import molecular_density
-from streamer_drift_diffusion.timestepping import TimestepError, dielectric_limit, transport_limit
+from streamer_drift_diffusion.timestepping import (
+    TimestepError, dielectric_limit,
+)
 from streamer_drift_diffusion.transport_coefficients import calculate_transport_coefficients, electron_drift
 
 
@@ -139,7 +141,9 @@ class StaggeredTests(unittest.TestCase):
                         -state.mobility_z[:, 1:-1][face_z]*state.ez_face[:, 1:-1][face_z]*scale)
         state.ne[:] = 1e15*gas
         initial = np.sum(state.ne*state.volume)*2*np.pi
-        losses = ElectronTransport(state, config.delta).step(state, .2*transport_limit(state, config))
+        transport = ElectronTransport(state, config.delta).prepare(state)
+        dt = .2*config.dt_cfl_number*transport.transport_limit
+        losses = transport.step(state, dt, prepared=True)
         self.assertGreater(losses[0], 0.)
         self.assertAlmostEqual((np.sum(state.ne*state.volume)*2*np.pi+losses.sum())/initial, 1., places=13)
 

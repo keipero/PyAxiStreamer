@@ -68,7 +68,7 @@ class TimeLoopTests(unittest.TestCase):
         state = initialize_simulation(config)
         before = {name: getattr(state, name).copy() for name in DENSITY_NAMES}
 
-        def fail(operator, current, dt):
+        def fail(operator, current, dt, *, prepared=False):
             current.ne[:] = -1.
             current.o2[:] = 0.
             return np.ones(3)

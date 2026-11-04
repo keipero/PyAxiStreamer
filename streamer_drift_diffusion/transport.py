@@ -1,4 +1,5 @@
 """FiPyによる円筒有限体積の陽的電子移流拡散と、吸収境界の粒子収支。"""
+import math
 import numpy as np
 
 from fipy import (CellVariable, ExplicitDiffusionTerm, ExplicitUpwindConvectionTerm,
@@ -88,6 +89,16 @@ class ElectronTransport:
         セルの吸収損失係数 [s⁻¹]。
     gas : ndarray of bool, shape (nr, nz)
         初期の気体マスクのコピー。形状変更を検出する。
+    interior, boundary, low_gas : ndarray of bool, shape (nfaces,)
+        初期化時に固定する気体間面、吸収境界面、小さい座標側の気体区分。
+    distance : ndarray, shape (nfaces,)
+        気体間はセル幅、その他は半セル幅の距離 [m]。
+    diffusion_rates, boundary_rates : ndarray, shape (nfaces,)
+        prepare()で生成するD*A/dと、外向き移流を加えた吸収係数 [m³/s]。
+        共通係数2πは省略する。boundary_ratesは境界面以外で0。
+    transport_limit, diffusion_limit : float
+        prepare()後の合算輸送・純拡散の陽的上限 [s]。損失0ならmath.inf。
+        CFL数・共通安全係数を掛ける前の値。
 
     Notes
     -----
@@ -96,6 +107,8 @@ class ElectronTransport:
     気体間Dは調和平均。電極・外端は気体側Dと半セル距離による吸収で、外から供給しない。
     1シミュレーションにつき一度作り、格子と電極形状は計算中に変更しない。
     流出数の累積は受理を判断する呼出側が担当する。
+    時間ループはprepare()の面係数をCFL・輸送・流出数へ共用する。
+    単独のstep()は既定で係数を再評価し、速度・Dの変更を反映する。
 
     Examples
     --------
@@ -144,6 +157,9 @@ class ElectronTransport:
             raise ValueError("transport spacing must match the shared grid")
         self.shape, self.mesh = self.grid.shape, self.grid.mesh
         self.gas = state.gas_mask.copy()
+        self.low_gas, high_gas = self.grid.adjacent(self.gas)
+        self.interior, self.boundary = self.low_gas & high_gas, self.low_gas ^ high_gas
+        self.distance = self.grid.distances(self.gas)
         self.density = CellVariable(mesh=self.mesh, value=0., hasOld=True)
         self.velocity = FaceVariable(mesh=self.mesh, rank=1, value=0.)
         self.diffusion = FaceVariable(mesh=self.mesh, value=0.)
@@ -154,7 +170,78 @@ class ElectronTransport:
                          - self.absorption * self.density.old)
         self.solver = LinearLUSolver(tolerance=1e-12)
 
-    def step(self, state, dt):
+    def prepare(self, state):
+        """現在の速度・Dから、CFL・輸送・境界流出が共有する面係数を準備する。
+
+        Parameters
+        ----------
+        state : SimulationState
+            共有格子、固定のgas_mask、全半径面vex (nr+1,nz)、全軸方向面vey
+            (nr,nz+1) [m/s]と中心de (nr,nz) [m²/s]を持つ状態。
+
+        Returns
+        -------
+        ElectronTransport
+            準備済みの自身。FiPyの係数、面のdiffusion_rates・boundary_ratesと、
+            transport_limit・diffusion_limit [s]を更新する。密度と累積流出数は変更しない。
+
+        Raises
+        ------
+        ValueError
+            格子・電極マスク・面配列形状が初期化時と異なる、または気体のDが負・非有限。
+        FloatingPointError
+            面速度が非有限、または厳密なNumPy例外設定下で係数計算が失敗。
+
+        Notes
+        -----
+        固定の面分類・距離は初期化時に作る。気体間Dは調和平均、吸収面Dは気体側値。
+        片側Dが0の気体間面は拡散障壁となり、金属内のDは0として扱う。
+        面係数D*A/dに外向き移流A*max(v_out,0)を加え、同じ境界係数を損失項と流出へ使う。
+        合算上限はセルの移流・拡散流出対角の和、純拡散上限は拡散対角だけから求める。
+        気体セルだけを評価し、両上限にCFL数・安全係数は掛けない。軸の面積は0。
+        速度・Dを変更したら再度呼ぶ。密度のみが変わる試行・再試行では再利用できる。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
+        >>> config = SimulationConfig(nr=2, nz=3, voltage=0., nmax=0.,
+        ...                           background_ionization=0., t_end=0.)
+        >>> state = initialize_simulation(config)
+        >>> transport = ElectronTransport(state, config.delta).prepare(state)
+        >>> transport.transport_limit, transport.diffusion_limit
+        (inf, inf)
+        >>> float(transport.boundary_rates.sum())
+        0.0
+        >>> losses = transport.step(state, config.dt, prepared=True)
+        >>> float(losses.sum())
+        0.0
+        """
+        grid = self.grid
+        if state.grid is not grid or state.ne.shape != self.shape or not np.array_equal(state.gas_mask, self.gas):
+            raise ValueError("transport grid and electrode mask must not change")
+        speed = grid.pack_faces(state.vex, state.vey)
+        if not np.all(np.isfinite(speed)):
+            raise FloatingPointError("nonfinite transport velocity")
+        coefficient = np.where(self.gas, state.de, 0.)
+        if np.any(~np.isfinite(coefficient)) or np.any(coefficient < 0):
+            raise ValueError("diffusion coefficients must be finite and nonnegative")
+        low, high = grid.adjacent(coefficient)
+        diffusion = low + high
+        np.divide(2*low*high, low+high, out=diffusion, where=self.interior & (diffusion > 0.))
+        self.diffusion_rates = diffusion*grid.area/self.distance
+        self.boundary_rates = (grid.area*np.maximum(np.where(self.low_gas, speed, -speed), 0.)
+                               + self.diffusion_rates)*self.boundary
+        diffusion_loss = grid.sum_faces(self.diffusion_rates)
+        rate = speed*grid.area
+        loss = grid.sum_faces(np.maximum(rate, 0.), np.maximum(-rate, 0.)) + diffusion_loss
+        maxima = (float(np.max((values/grid.volume)[self.gas])) for values in (loss, diffusion_loss))
+        self.transport_limit, self.diffusion_limit = (1/value if value > 0. else math.inf for value in maxima)
+        self.velocity.setValue(grid.directions*speed*self.interior)
+        self.diffusion.setValue(diffusion*self.interior)
+        self.absorption.setValue((grid.sum_faces(self.boundary_rates)/grid.volume).ravel(order='F'))
+        return self
+
+    def step(self, state, dt, *, prepared=False):
         """旧密度で電子輸送を1回更新し、境界ごとの流出数を返す。
 
         Parameters
@@ -163,6 +250,9 @@ class ElectronTransport:
             共有格子と計算配列。中心配列は(nr,nz)、面配列は方向別の全面形状。
         dt : float
             実際の更新幅 [s]。有限かつ正。
+        prepared : bool, optional
+            Trueなら同じstateの速度・Dでprepare()済みの係数を使う。既定Falseでは再評価する。
+            Trueで呼ぶ間は格子・電極形状・速度・Dを変更しない。
 
         Returns
         -------
@@ -195,30 +285,19 @@ class ElectronTransport:
         """
         if not np.isfinite(dt) or dt <= 0:
             raise ValueError("transport dt must be finite and positive")
-        if state.ne.shape != self.shape or not np.array_equal(state.gas_mask, self.gas):
-            raise ValueError("transport grid and electrode mask must not change")
-        if (not np.all(np.isfinite(state.ne)) or not np.all(np.isfinite(state.vex))
-                or not np.all(np.isfinite(state.vey))):
-            raise FloatingPointError("nonfinite transport density or velocity")
-
+        if not prepared:
+            self.prepare(state)
+        if not np.all(np.isfinite(state.ne)):
+            raise FloatingPointError("nonfinite transport density")
         grid = self.grid
-        low_gas, high_gas = grid.adjacent(self.gas)
-        interior = low_gas & high_gas
-        speed = grid.pack_faces(state.vex, state.vey)
-        diffusion = grid.diffusion_faces(state.de, self.gas)
-        absorption = grid.area * (np.maximum(np.where(low_gas, speed, -speed), 0.)
-                                  + diffusion/grid.distances(self.gas)) * (low_gas ^ high_gas)
         old = np.where(self.gas, state.ne, 0.)
         self.density.setValue(old.ravel(order='F'))
         self.density.updateOld()
-        self.velocity.setValue(grid.directions * speed * interior)
-        self.diffusion.setValue(diffusion * interior)
-        self.absorption.setValue((grid.sum_faces(absorption)/grid.volume).ravel(order='F'))
         self.equation.solve(var=self.density, dt=dt, solver=self.solver)
         result = np.asarray(self.density.value).reshape(self.shape, order='F')
         low_density, high_density = grid.adjacent(old)
         losses = 2*np.pi*dt*np.bincount(grid.boundary_kind,
-            weights=absorption*np.where(low_gas, low_density, high_density), minlength=3)
+            weights=self.boundary_rates*np.where(self.low_gas, low_density, high_density), minlength=3)
         if not np.all(np.isfinite(result)) or not np.all(np.isfinite(losses)):
             raise FloatingPointError("nonfinite FiPy transport solution or boundary loss")
         state.ne[:] = result

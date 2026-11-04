@@ -77,6 +77,14 @@ PETScは未導入です。Windows用PETSc本体とpetsc4pyの導入・検証は�
 流出数は`[電極, 接地面, 上端＋外周]`の3区分です。輸送の損失項と同じ係数・旧密度から集計し、受理した更新だけ累積します。
 単独で更新する場合は`transport = ElectronTransport(state, config.delta)`を一度作り、`losses = transport.step(state, dt)`を呼びます。
 
+面分類・境界距離は輸送オブジェクトの初期化時に固定し、現在の速度・Dから作る係数は
+`transport.prepare(state)`へ集約しています。CFL判定、FiPyの吸収損失項、3区分の流出数が同じ係数を使います。
+時間ループでは`timestepping.timestep_limits(..., transport=transport)`で一度準備し、
+`advance_density(..., transport=transport, prepared=True)`で再試行にも再利用します。
+単独の`step()`は既定で係数を再評価します。手動で`prepared=True`を使う場合は、
+速度・Dを変更するたびに`prepare()`を呼んでください。密度の変更だけなら再利用できます。
+詳細と検証結果は[輸送面係数の一元化](TRANSPORT_FACE_UNIFICATION.md)を参照してください。
+
 `electron_diffusion`は検証用の一定係数[m²/s]で、既定0です。正の値は利用者が指定します。物理係数の自動生成やPy3bolos連成は行っていません。
 たとえば`--electron-diffusion=0.5`を指定できますが、空気の物理係数として推奨する値ではありません。
 
@@ -145,7 +153,7 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `simulation_types.py` | 計算設定と状態 |
 | `initial_conditions.py` | 設定検査、初期密度とFiPyソルバーの生成 |
 | `electrostatics.py` | FiPy Poisson、電荷源、換算電場、境界電位 |
-| `transport.py` | FiPy電子輸送と吸収・流出数 |
+| `transport.py` | 共通の面係数・輸送CFL、FiPy電子輸送と吸収・流出数 |
 | `transport_coefficients.py` | 面の移動度・速度、中心のD |
 | `reactions.py` | 反応係数と密度更新 |
 | `timestepping.py` | 安定刻み、共通のadvance_density()、試行の受理・復元 |
@@ -159,8 +167,8 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 引数・戻り値・例外に加え、物理量の単位、配列形状、状態を更新する範囲を説明し、
 可能な限り小格子や一時フォルダで実行できる`Examples`を添えます。
 docstringはコード削減の対象にせず、削減量は説明を除く実装行数で評価します。
-今回の整備では全69定義にdocstring、68定義に`Examples`があり、
-全モジュールのdoctest計328項目を確認しました。
+面係数統合後の全65定義にdocstring、64定義に`Examples`があり、
+全モジュールのdoctest計315項目を確認しました。廃止した関数の物理条件は共通処理の説明へ引き継いでいます。
 
 例えば時間ループの`Examples`は次のコマンドで実行できます。
 
@@ -180,6 +188,7 @@ python -m unittest discover -s tests
 RB-SORの更新順やスレッド数に固有のテストは、新しいPoissonの物理・数値検証へ置き換えています。
 
 - [時間ループ・出力統合の仕様と検証](TIME_LOOP_UNIFICATION.md)
+- [輸送面係数の一元化](TRANSPORT_FACE_UNIFICATION.md)
 - [Poisson移行の結果・精度・性能](FIPY_POISSON_MIGRATION.md)
 - [FiPy輸送移行と格子共通化の履歴](FIPY_MIGRATION_PLAN.md)
 - [コード削減の設計案](CODE_REDUCTION_PROPOSAL.md)

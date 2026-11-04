@@ -16,8 +16,7 @@ from streamer_drift_diffusion.reactions import apply_reactions
 from streamer_drift_diffusion.output import load_output_times
 from streamer_drift_diffusion.transport_coefficients import electron_mobility
 from streamer_drift_diffusion.timestepping import (
-    DENSITY_NAMES, TimestepError, chemistry_limit, dielectric_limit,
-    timestep_limits, transport_limit, advance_density,
+    DENSITY_NAMES, TimestepError, chemistry_limit, dielectric_limit, timestep_limits, advance_density,
 )
 
 
@@ -36,12 +35,12 @@ class AdaptiveTests(unittest.TestCase):
         state.vex[2, 1] = 3.*volume/state.sr[2, 1]
         state.vey[1, 1] = -4.*volume/state.sz[1, 1]
         state.vey[1, 2] = 5.*volume/state.sz[1, 1]
-        dt = transport_limit(state, config)
+        transport = ElectronTransport(state, config.delta).prepare(state)
+        dt = config.dt_cfl_number*transport.transport_limit
         self.assertAlmostEqual(dt, config.dt_cfl_number / 14.)
-        transport = ElectronTransport(state, config.delta)
         for seed in range(5):
             state.ne[:] = np.random.default_rng(seed).random(state.ne.shape)
-            transport.step(state, dt)
+            transport.step(state, dt, prepared=True)
             self.assertTrue(np.all(state.ne >= 0))
 
     def test_dielectric_zero_field_is_not_zero_conductivity(self):
@@ -90,7 +89,7 @@ class AdaptiveTests(unittest.TestCase):
         state = initialize_simulation(config)
         calls = []
 
-        def fail_first(operator, current, dt):
+        def fail_first(operator, current, dt, *, prepared=False):
             calls.append(dt)
             if len(calls) == 1:
                 state.ne[:] = -1.
@@ -109,7 +108,7 @@ class AdaptiveTests(unittest.TestCase):
         state = initialize_simulation(config)
         original = {name: getattr(state, name).copy() for name in DENSITY_NAMES}
 
-        def fail(operator, current, dt):
+        def fail(operator, current, dt, *, prepared=False):
             state.ne[:] = -1.
             state.o2[:] = 0.
 

@@ -174,7 +174,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
             while time < config.t_end:
                 if step >= config.max_steps:
                     raise TimestepError(f"max_steps={config.max_steps} reached at t={time:.9e}")
-                limits = timestep_limits(state, config)
+                limits = timestep_limits(state, config, transport=transport)
                 if config.adaptive_timestep:
                     if limits.dt < config.dt_min:
                         raise TimestepError(f"{limits.limiting} requires dt={limits.dt:.6e} < dt_min at t={time:.9e}")
@@ -208,7 +208,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
                 # 出力・終端へ揃える最後の端数は、dt_minより小さくても安全側。
                 if not config.adaptive_timestep and dt > limits.dt*(1+1e-12):
                     raise TimestepError(f"fixed dt exceeds {limits.limiting} stability constraint; reduce dt or use adaptive_timestep")
-                dt, retries = advance_density(state, config, dt, transport=transport)
+                dt, retries = advance_density(state, config, dt, transport=transport, prepared=True)
                 advanced_time = time + dt
                 # 使用dtは安定条件内のまま。時計だけをイベント時刻へ揃え、
                 # 丸め誤差分について密度更新やstep加算を繰り返さない。

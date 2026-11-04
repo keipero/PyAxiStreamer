@@ -16,7 +16,7 @@ from streamer_drift_diffusion import SimulationConfig, initialize_simulation, ru
 from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.grid import initialize_grid
 from streamer_drift_diffusion.timestepping import (
-    TimestepError, diffusion_limit, transport_limit, timestep_limits, advance_density,
+    TimestepError, timestep_limits, advance_density,
 )
 from streamer_drift_diffusion.__main__ import main
 
@@ -59,21 +59,24 @@ class DiffusionTests(unittest.TestCase):
                 initialize_simulation(self.config(dt_cfl_number=cfl))
 
     def test_harmonic_face_and_half_cell_absorption(self):
-        grid = initialize_grid(SimulationConfig(nr=2, nz=2, delta=1., electrode_gap=10.))
+        config = SimulationConfig(nr=2, nz=2, delta=1., electrode_gap=10., nmax=0.)
+        state = initialize_simulation(config)
+        grid = state.grid
         coefficient = np.array([[1., 9.], [1., 9.]])
-        gas = np.ones((2, 2), dtype=bool)
-        radial, axial = grid['grid'].split_faces(grid['grid'].diffusion_rates(coefficient, gas))
+        state.de[:] = coefficient
+        radial, axial = grid.split_faces(ElectronTransport(state, 1.).prepare(state).diffusion_rates)
         assert_array_equal(radial[0], 0.)
-        assert_allclose(axial[:, 1]/grid['sz'][:, 0], 1.8)
-        assert_allclose(axial[:, 0]/grid['sz'][:, 0], 2.)
-        assert_allclose(axial[:, -1]/grid['sz'][:, 0], 18.)
-        gas[:, 1] = False
-        _, axial = grid['grid'].split_faces(grid['grid'].diffusion_rates(coefficient, gas))
-        assert_allclose(axial[:, 1]/grid['sz'][:, 0], 2.)
+        assert_allclose(axial[:, 1]/state.sz[:, 0], 1.8)
+        assert_allclose(axial[:, 0]/state.sz[:, 0], 2.)
+        assert_allclose(axial[:, -1]/state.sz[:, 0], 18.)
+        state.gas_mask[:, 1] = False
+        _, axial = grid.split_faces(ElectronTransport(state, 1.).prepare(state).diffusion_rates)
+        assert_allclose(axial[:, 1]/state.sz[:, 0], 2.)
         assert_array_equal(axial[:, -1], 0.)
         # D=0の気体層は、調和平均では拡散障壁となる。
-        coefficient[:, 1] = 0.
-        _, axial = grid['grid'].split_faces(grid['grid'].diffusion_rates(coefficient, np.ones_like(gas)))
+        state.gas_mask[:] = True
+        state.de[:, 1] = 0.
+        _, axial = grid.split_faces(ElectronTransport(state, 1.).prepare(state).diffusion_rates)
         assert_array_equal(axial[:, 1], 0.)
 
     def test_zero_coefficient_and_zero_velocity_keep_zero_state(self):
@@ -89,17 +92,20 @@ class DiffusionTests(unittest.TestCase):
         grid = initialize_grid(config)
         coefficient = np.zeros((3, 3))
         coefficient[1, 1] = 1.
-        state = SimpleNamespace(**grid, de=coefficient)
+        state = initialize_simulation(config)
+        state.de[:] = coefficient
         # この気体セルはr下側の電極へだけ拡散する。他の気体はD=0。
         self.assertFalse(grid['gas_mask'][0, 1])
         self.assertTrue(grid['gas_mask'][1, 1])
         # 気体の体積1.5 / (D*面積1/半セル幅0.5) = 0.75。
         # 電極側の小さい体積0.5を制約の評価へ混ぜない。
-        self.assertAlmostEqual(diffusion_limit(state, config), .75)
+        self.assertAlmostEqual(ElectronTransport(state, config.delta).prepare(state).diffusion_limit, .75)
 
     def test_diffusion_does_not_emit_from_empty_electrode_or_boundaries(self):
-        state = initialize_simulation(self.config())
-        losses = self.step(state, diffusion_limit(state, self.config())*.5)
+        config = self.config()
+        state = initialize_simulation(config)
+        transport = ElectronTransport(state, config.delta).prepare(state)
+        losses = transport.step(state, transport.diffusion_limit*.5, prepared=True)
         assert_array_equal(state.ne, 0.)
         assert_array_equal(losses, 0.)
 
@@ -113,9 +119,10 @@ class DiffusionTests(unittest.TestCase):
         state.vey[:] = -700.
         initial = np.sum(state.ne*state.volume)*2*np.pi
         loss = np.zeros(3)
-        dt = transport_limit(state, config)*.5
+        transport = ElectronTransport(state, config.delta).prepare(state)
+        dt = config.dt_cfl_number*transport.transport_limit*.5
         for _ in range(100):
-            loss += self.step(state, dt)
+            loss += transport.step(state, dt, prepared=True)
         final = np.sum(state.ne*state.volume)*2*np.pi
         self.assertAlmostEqual((final+loss.sum())/initial, 1., places=13)
         self.assertTrue(np.all(state.ne >= 0.))
@@ -127,9 +134,11 @@ class DiffusionTests(unittest.TestCase):
         state = initialize_simulation(config)
         state.vex[:] = state.vey[:] = 3.
         state.de[:] = 0.
-        drift_bound = transport_limit(state, config)
+        transport = ElectronTransport(state, config.delta).prepare(state)
+        drift_bound = config.dt_cfl_number*transport.transport_limit
         state.de[:] = 1.
-        separate_bound = min(drift_bound, diffusion_limit(state, config))
+        transport.prepare(state)
+        separate_bound = min(drift_bound, transport.diffusion_limit)
         state.ne[-1, -1] = 1.
         initial = state.ne.copy()
         self.step(state, separate_bound)
@@ -157,14 +166,14 @@ class DiffusionTests(unittest.TestCase):
 
         real_step = ElectronTransport.step
 
-        def fail_first(operator, current, dt):
-            losses = real_step(operator, current, dt)
+        def fail_first(operator, current, dt, *, prepared=False):
+            losses = real_step(operator, current, dt, prepared=prepared)
             calls.append(1)
             if len(calls) == 1:
                 state.ne[state.gas_mask] = -1.
             return losses
 
-        dt = transport_limit(state, config)*.1
+        dt = (config.dt_cfl_number*ElectronTransport(state, config.delta).prepare(state).transport_limit)*.1
         with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail_first):
             accepted, retries = advance_density(state, config, dt)
         self.assertEqual(retries, 1)
@@ -183,10 +192,10 @@ class DiffusionTests(unittest.TestCase):
             state = SimpleNamespace(**grid, ne=density, de=np.full_like(density, coefficient),
                                     vex=np.zeros((config.nr+1, config.nz)),
                                     vey=np.zeros((config.nr, config.nz+1)))
-            transport = ElectronTransport(state, spacing)
-            count = math.ceil(end/(.05*diffusion_limit(state, config)))
+            transport = ElectronTransport(state, spacing).prepare(state)
+            count = math.ceil(end/(.05*transport.diffusion_limit))
             for _ in range(count):
-                transport.step(state, end/count)
+                transport.step(state, end/count, prepared=True)
             spread = np.sqrt(sigma*sigma+2*coefficient*end)
             exact = (sigma/spread)**3*gaussian_average(grid, spread, center)
             errors.append(np.sum(np.abs(density-exact)*grid['volume'])/np.sum(exact*grid['volume']))
@@ -234,9 +243,9 @@ class DiffusionTests(unittest.TestCase):
             state = SimpleNamespace(**grid, ne=initial.copy(),
                                     de=np.full_like(initial, coefficient),
                                     vex=np.zeros((3, size)), vey=np.zeros((2, size+1)))
-            transport = ElectronTransport(state, 1.)
+            transport = ElectronTransport(state, 1.).prepare(state)
             for _ in range(count):
-                transport.step(state, end/count)
+                transport.step(state, end/count, prepared=True)
             errors.append(float(np.max(np.abs(state.ne-exact))))
         self.assertTrue(1.9 < errors[0]/errors[1] < 2.1)
         self.assertTrue(1.9 < errors[1]/errors[2] < 2.1)
