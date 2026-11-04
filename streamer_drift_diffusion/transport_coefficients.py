@@ -1,0 +1,83 @@
+"""電子ドリフト速度と電子拡散係数。係数の格納先は全てstateに集約する。"""
+import numpy as np
+
+from .simulation_types import molecular_density
+
+
+def electron_drift(component, field):
+    """換算電場の1成分から、その方向の電子ドリフト速度を求める。
+
+    Args:
+        component (float): 半径方向または軸方向の換算電場成分 [Td]。
+            正負の符号を持ち、state.exまたはstate.eyに相当する。
+        field (float): 換算電場の大きさ [Td]。state.abs_eに相当する
+            0以上の有限値を指定する。
+
+    Returns:
+        float: 指定方向の電子ドリフト速度 [m/s]。
+            fieldが0の場合は0.0、それ以外は元コードの式
+            -3.74e24 * (component * 1e-21) * field**(-0.25)を返す。
+
+    Notes:
+        負号は電子が電場と反対方向へドリフトすることを表す。
+        componentの1e-21倍は、Tdから換算電場のSI単位 [V m^2] への
+        換算であり、電場 [V/m] への換算ではない。
+        引数の妥当性はこの関数では検査しない。
+        通常の時間発展では配列版のcalculate_transport_coefficients()を使う。
+    """
+    return 0.0 if field == 0 else -3.74e24 * (component * 1e-21) * field ** (-0.25)
+
+
+def electron_mobility(field, config):
+    """換算電場の大きさ [Td] から現行速度式の移動度 [m^2/(V s)]を返す。
+
+    F>0ではmu=3.74e24*F**(-1/4)/N。F=0は速度を0にするため0を返す。
+    低電場の特異性は従来どおりで、正則化は行わない。
+    """
+    mobility = np.zeros_like(field, dtype=np.float64)
+    np.power(field, -.25, out=mobility, where=field > 0.)
+    return mobility * (3.74e24 / molecular_density(config))
+
+
+def _tangential_faces(values, gas, axis):
+    """中心の接線成分を指定方向の面へ補間する。金属面では接線電場0。
+
+    内部気体面は両中心の平均、軸は偶対称、接地面は0。
+    外周・上端は気体2点から境界位置へ線形外挿し、隣が金属なら1点値。
+    法線成分はこの補間を使わず、電位と境界値から直接計算する。
+    """
+    values, gas = np.moveaxis(values, axis, 0), np.moveaxis(gas, axis, 0)
+    result = np.zeros((values.shape[0] + 1, *values.shape[1:]))
+    result[1:-1] = np.where(gas[:-1] & gas[1:], .5*(values[:-1]+values[1:]), 0.)
+    if axis == 0:
+        result[0] = values[0]  # r=0で軸方向成分は偶対称。
+    result[-1] = np.where(gas[-2], 1.5*values[-1]-.5*values[-2], values[-1]) * gas[-1]
+    return np.moveaxis(result, 0, axis)
+
+
+def calculate_transport_coefficients(state, config):
+    """各面の同じ位置で電場強度・移動度・法線速度を求め、中心Dも更新する。
+
+    Args:
+        state (SimulationState): 中心ex/eyと全法線面er_face/ez_face [Td]。
+            vex・mobility_rは(nr+1,nz)、vey・mobility_zは(nr,nz+1)。
+        config (SimulationConfig): 一定拡散係数electron_diffusion [m^2/s]。
+
+    Returns:
+        None: 面の移動度 [m^2/(V s)]・速度 [m/s]と中心deを更新する。
+
+    Notes:
+        元コードの速度式を維持する。各面で法線成分と補間した接線成分の
+        hypotから強度を求めるため、異なる位置の成分を直接組み合わせない。
+        軸の半径流速・移動度は0。電極内部は0、気体と接する吸収面は保持する。
+        deは検証用の一定係数。将来のPy3bolos連成では、この格納箇所へ
+        セルごとの物理係数を与える。現在は物理係数の自動計算を行わない。"""
+    radial = np.hypot(state.er_face, _tangential_faces(state.ey, state.gas_mask, 0))
+    axial = np.hypot(_tangential_faces(state.ex, state.gas_mask, 1), state.ez_face)
+    state.mobility_r[:] = electron_mobility(radial, config)
+    state.mobility_z[:] = electron_mobility(axial, config)
+    state.mobility_r[0] = 0.
+    scale = molecular_density(config) * 1e-21
+    state.vex[:] = -state.mobility_r * state.er_face * scale
+    state.vey[:] = -state.mobility_z * state.ez_face * scale
+    state.de[:] = config.electron_diffusion * state.gas_mask

@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.nb[ci]
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/
+outputdata*/
+output/
+figures/
+
+# Independent numerical diagnostics and generated artifacts
+/diagnostics_20261029/
