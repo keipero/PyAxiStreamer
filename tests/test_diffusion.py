@@ -5,7 +5,6 @@ import json
 import math
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -189,16 +188,15 @@ class DiffusionTests(unittest.TestCase):
                                  delta=spacing, electrode_gap=3e-3, electron_diffusion=coefficient)
             grid = initialize_grid(config)
             density = gaussian_average(grid, sigma, center)
-            state = SimpleNamespace(**grid, ne=density, de=np.full_like(density, coefficient),
-                                    vex=np.zeros((config.nr+1, config.nz)),
-                                    vey=np.zeros((config.nr, config.nz+1)))
+            state = initialize_simulation(config)
+            state.ne[:] = density
             transport = ElectronTransport(state, spacing).prepare(state)
             count = math.ceil(end/(.05*transport.diffusion_limit))
             for _ in range(count):
                 transport.step(state, end/count, prepared=True)
             spread = np.sqrt(sigma*sigma+2*coefficient*end)
             exact = (sigma/spread)**3*gaussian_average(grid, spread, center)
-            errors.append(np.sum(np.abs(density-exact)*grid['volume'])/np.sum(exact*grid['volume']))
+            errors.append(np.sum(np.abs(state.ne-exact)*grid['volume'])/np.sum(exact*grid['volume']))
         self.assertLess(errors[1], errors[0]/2)
         self.assertLess(errors[2], errors[1]/2)
         self.assertLess(errors[-1], .01)
@@ -239,10 +237,8 @@ class DiffusionTests(unittest.TestCase):
         for count in (10, 20, 40):
             config = self.config(nr=2, nz=size, delta=1., electrode_gap=100.,
                                  electron_diffusion=coefficient)
-            grid = initialize_grid(config)
-            state = SimpleNamespace(**grid, ne=initial.copy(),
-                                    de=np.full_like(initial, coefficient),
-                                    vex=np.zeros((3, size)), vey=np.zeros((2, size+1)))
+            state = initialize_simulation(config)
+            state.ne[:] = initial
             transport = ElectronTransport(state, 1.).prepare(state)
             for _ in range(count):
                 transport.step(state, end/count, prepared=True)

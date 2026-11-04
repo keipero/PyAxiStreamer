@@ -349,6 +349,8 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
     開始時の7密度を退避し、輸送後・反応後の非負性と物理制約を検査する。
     固定は失敗時に復元して停止、適応だけが半減・再試行する。
     流出数は受理時にだけ累積し、試行中に電場・係数は再計算しない。
+    電子密度はstate.ne_varと輸送が同じ正本を参照する。各試行でFiPy旧値を更新し、
+    棄却時はne_var.setValue()で復元する。他の6密度も復元し、派生式のキャッシュも整合させる。
     この関数は時刻を進めない。更新後の電場準備は呼出側で行う。
 
     Examples
@@ -386,8 +388,9 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
             state.electron_losses[:] += losses
             return dt, retries
         except (TimestepError, FloatingPointError) as exc:
-            for name, values in saved.items():
-                getattr(state, name)[:] = values
+            state.ne_var.setValue(saved['ne'].ravel(order='F'))
+            for name in DENSITY_NAMES[1:]:
+                getattr(state, name)[:] = saved[name]
             if retries == max_retries or dt * 0.5 < config.dt_min:
                 raise TimestepError(f"step rejected at dt={dt:.6e}: {exc}") from exc
             dt *= 0.5

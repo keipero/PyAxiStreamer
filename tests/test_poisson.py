@@ -46,7 +46,7 @@ class PoissonTests(unittest.TestCase):
     def test_small_charge_change_is_not_skipped_after_large_boundary_voltage(self):
         state = initialize_simulation(self.config(poisson_tolerance=1e-6))
         zero = np.zeros_like(state.ne)
-        before = state.poisson.solve(zero, 500.)
+        before = state.poisson.solve(zero, 500.).copy()
         charge = 1e-3*state.gas_mask
         after = state.poisson.solve(charge, 500.)
         matrix, rhs = dense_poisson(state, 0., charge)
@@ -56,17 +56,19 @@ class PoissonTests(unittest.TestCase):
 
     def test_metal_charge_is_excluded(self):
         state = initialize_simulation(self.config())
-        expected = state.poisson.solve(np.zeros_like(state.ne), 500.)
+        expected = state.poisson.solve(np.zeros_like(state.ne), 500.).copy()
         charge = np.where(state.gas_mask, 0., 1e99)
         assert_allclose(state.poisson.solve(charge, 500.), expected, rtol=1e-14)
 
-    def test_solver_reuses_mesh_and_never_mutates_earlier_result(self):
+    def test_solver_reuses_mesh_and_returns_live_view_with_explicit_snapshots(self):
         state = initialize_simulation(self.config())
         self.assertIs(state.poisson.potential.mesh, state.grid.mesh)
         first = state.poisson.solve(np.zeros_like(state.ne), 500.)
         saved = first.copy()
         state.poisson.solve(np.zeros_like(state.ne), -500.)
-        assert_array_equal(first, saved)
+        assert_allclose(first, state.phi, rtol=0., atol=0.)
+        assert_allclose(first, -saved, rtol=1e-14, atol=1e-12)
+        self.assertTrue(np.shares_memory(first, state.phi_var.value))
 
     def test_nonfinite_inputs_and_failed_solve_do_not_commit_potential(self):
         config = self.config()

@@ -2,6 +2,8 @@
 
 軸対称r-z有限体積モデルです。Poisson方程式と電子移流拡散をFiPyで解き、反応・物理係数はNumPyで評価します。
 現在のバックエンドはSciPy、PoissonはLU求解です。Numbaは不要です。
+電子密度・電位はFiPy変数を正本とし、NumPy計算には2次元ビューを渡します。
+PETSc導入前までの状態管理整理を完了しています。[状態管理の仕様・検証](FIPY_STATE_UNIFICATION.md)を参照してください。
 
 ## 実行
 
@@ -58,7 +60,7 @@ FiPyの`DiffusionTerm`を気体間だけに適用し、電極・接地・外端�
 
 `PoissonSolver`とFiPy方程式は初期化時に一度作ります。現在は`LinearLUSolver`を使用し、毎回行列を組み立て・分解します。
 LUには初期推定が不要なため、初期値を0にして解き、微小な電荷変化を相対初期残差で省略しないようにしています。
-入力・解の有限性と`max(abs(A*phi-b))/max(abs(b))`を検査し、失敗時はstateへ解を反映せず例外で停止します。
+入力・解の有限性と`max(abs(A*phi-b))/max(abs(b))`を検査し、失敗時は正本の電位を求解前へ復元して例外で停止します。
 ゼロ右辺の分母には浮動小数点のtinyを使います。
 
 ```powershell
@@ -100,7 +102,8 @@ PETScは未導入です。Windows用PETSc本体とpetsc4pyの導入・検証は�
 固定モードは`dt`を基本幅とし、出力時刻・波形の折れ点・終端に合わせる部分だけ短縮します。
 実際の刻みが合算輸送CFL・反応・誘電緩和の安全上限を超える場合、または更新後の検査に失敗した場合は停止します。
 適応モードは安定条件と成長率上限から刻みを選び、失敗した試行の7密度を復元してdtを半減します。
-背景加算量は両モードとも`background_ionization*actual_dt/config.dt`です。FiPy輸送の現在値・旧値も各試行の開始時に同期します。
+背景加算量は両モードとも`background_ionization*actual_dt/config.dt`です。
+電子密度の現在値はstateと輸送で共有し、各試行の開始時にFiPyの旧値を更新します。
 dt_minへの無条件な切上げは行いません。イベントまでの端数は安全側の短縮なのでdt_min未満も許します。
 受理した更新数が`max_steps`に達し、終了時刻へ到達していなければ失敗として停止します。
 
@@ -167,8 +170,8 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 引数・戻り値・例外に加え、物理量の単位、配列形状、状態を更新する範囲を説明し、
 可能な限り小格子や一時フォルダで実行できる`Examples`を添えます。
 docstringはコード削減の対象にせず、削減量は説明を除く実装行数で評価します。
-面係数統合後の全65定義にdocstring、64定義に`Examples`があり、
-全モジュールのdoctest計315項目を確認しました。廃止した関数の物理条件は共通処理の説明へ引き継いでいます。
+状態管理整理後の全67定義にdocstring、66定義に`Examples`があり、
+全モジュールのdoctest計324項目を確認しました。廃止した関数の物理条件は共通処理の説明へ引き継いでいます。
 
 例えば時間ループの`Examples`は次のコマンドで実行できます。
 
@@ -189,6 +192,7 @@ RB-SORの更新順やスレッド数に固有のテストは、新しいPoisson�
 
 - [時間ループ・出力統合の仕様と検証](TIME_LOOP_UNIFICATION.md)
 - [輸送面係数の一元化](TRANSPORT_FACE_UNIFICATION.md)
+- [FiPy変数を正本とする状態管理](FIPY_STATE_UNIFICATION.md)
 - [Poisson移行の結果・精度・性能](FIPY_POISSON_MIGRATION.md)
 - [FiPy輸送移行と格子共通化の履歴](FIPY_MIGRATION_PLAN.md)
 - [コード削減の設計案](CODE_REDUCTION_PROPOSAL.md)

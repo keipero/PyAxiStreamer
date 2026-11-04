@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+from fipy import CellVariable
 from .grid import CylindricalGrid
 
 if TYPE_CHECKING:
@@ -223,8 +224,8 @@ class SimulationState:
         半径方向の下側セル面の面積係数 [m^2]（2πを省略）
     sz : ndarray of float64, shape (nr, nz)
         軸方向の下側セル面の面積係数 [m^2]（2πを省略）
-    phi : ndarray of float64, shape (nr, nz)
-        FiPyで直接求解した総電位 [V]
+    phi_var : fipy.CellVariable
+        総電位の正本 [V]。poisson.potentialと共有するFiPyセル番号順の変数。
     ex : ndarray of float64, shape (nr, nz)
         セル中心の半径方向換算電場E_r/N [Td]（名前のxはr方向）
     ey : ndarray of float64, shape (nr, nz)
@@ -243,8 +244,8 @@ class SimulationState:
         酸素原子負イオンO⁻の数密度 [m^-3]
     o2m : ndarray of float64, shape (nr, nz)
         酸素分子負イオンO₂⁻の数密度 [m^-3]
-    ne : ndarray of float64, shape (nr, nz)
-        電子数密度 [m^-3]
+    ne_var : fipy.CellVariable
+        電子密度の正本 [m⁻³]。輸送と共有するFiPyセル番号順の変数。hasOld=True。
     rho : ndarray of float64, shape (nr, nz)
         Poisson電荷源 [V/m^2]。正味電荷密度/ε₀（半径重みなし）
     vex : ndarray of float64, shape (nr+1, nz)
@@ -276,6 +277,12 @@ class SimulationState:
     upper_boundary : ndarray of float64, shape (nr,)
         上端面の単位印加電圧に対する電位 [V/V]。長さnr
 
+    Attributes
+    ----------
+    ne, phi : ndarray of float64, shape (nr, nz)
+        正本の値をFortran順に変形した2次元ビュー。独立した値は保持しない。
+        neは電子密度 [m⁻³]、phiは総電位 [V]。独立した退避値にはcopy()を使う。
+
     Notes
     -----
     通常はinitialize_simulation()で生成する。フィールドの再代入は禁止するが、配列要素はその場で更新する。
@@ -285,6 +292,8 @@ class SimulationState:
     面積・体積は2πを省略し、electron_lossesだけは2πを含む実電子数。
     幾何配列はgridへの参照・ビューなので、格子を初期化後に書き換えない。
     状態退避は必要な数値配列をコピーする。FiPyの方程式を含む全体のdeepcopy/pickleは使用しない。
+    ne・phiへのNumPyスライス代入は正本の値を変える。FiPyの派生式のキャッシュも
+    更新する場合はne_var・phi_varのsetValue()を使う。組込みの初期化・反応・復元はこのAPIを使う。
 
     Examples
     --------
@@ -308,7 +317,7 @@ class SimulationState:
     volume: np.ndarray  # セル体積係数 [m^3]（共通係数2πを省略）
     sr: np.ndarray  # 半径方向の下側セル面の面積係数 [m^2]（2πを省略）
     sz: np.ndarray  # 軸方向の下側セル面の面積係数 [m^2]（2πを省略）
-    phi: np.ndarray  # FiPyで直接求解した総電位 [V]
+    phi_var: CellVariable  # 総電位の正本。PoissonSolverと共有する。
     ex: np.ndarray  # セル中心の半径方向換算電場E_r/N [Td]（名前のxはr方向）
     ey: np.ndarray  # セル中心の軸方向換算電場E_z/N [Td]（名前のyはz方向）
     abs_e: np.ndarray  # セル中心の換算電場の大きさ|E|/N [Td]。反応に使用
@@ -318,7 +327,7 @@ class SimulationState:
     o2p: np.ndarray  # 酸素分子正イオンO₂⁺の数密度 [m^-3]
     om: np.ndarray  # 酸素原子負イオンO⁻の数密度 [m^-3]
     o2m: np.ndarray  # 酸素分子負イオンO₂⁻の数密度 [m^-3]
-    ne: np.ndarray  # 電子数密度 [m^-3]
+    ne_var: CellVariable  # 電子密度の正本。輸送と共有し、旧値も保持する。
     rho: np.ndarray  # Poisson電荷源 [V/m^2]。正味電荷密度/ε₀（半径重みなし）
     vex: np.ndarray  # 全半径面の電子ドリフト速度 [m/s]。形状(nr+1,nz)
     vey: np.ndarray  # 全軸方向面の電子ドリフト速度 [m/s]。形状(nr,nz+1)
@@ -334,3 +343,53 @@ class SimulationState:
     mobility_z: np.ndarray  # 軸方向面で評価した電子移動度 [m^2/(V s)]
     radial_boundary: np.ndarray  # 外周面の単位印加電圧に対する電位 [V/V]。長さnz
     upper_boundary: np.ndarray  # 上端面の単位印加電圧に対する電位 [V/V]。長さnr
+
+    @property
+    def ne(self):
+        """電子密度の正本を、コピーなしのセル配列として参照する。
+
+        Returns
+        -------
+        ndarray, shape (nr, nz)
+            ne_var.valueとメモリを共有する電子密度 [m⁻³]。独立した退避にはcopy()を使う。
+
+        Notes
+        -----
+        FiPyセル番号との対応はFortran順。NumPyでの要素変更は正本に反映する。
+        FiPyの派生式にも変更を通知する代入にはne_var.setValue()を用いる。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
+        >>> import numpy as np
+        >>> state = initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.))
+        >>> np.shares_memory(state.ne, state.ne_var.value)
+        True
+        """
+        return self.ne_var.value.reshape(self.grid.shape, order='F')
+
+    @property
+    def phi(self):
+        """総電位の正本を、コピーなしのセル配列として参照する。
+
+        Returns
+        -------
+        ndarray, shape (nr, nz)
+            phi_var.valueとメモリを共有する総電位 [V]。求解後も最新値を参照する。
+
+        Notes
+        -----
+        Fortran順の2次元ビュー。独立した退避にはcopy()、FiPyの派生式への変更通知を
+        伴う代入にはphi_var.setValue()を使う。phi_varはpoisson.potentialと同一の変数。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
+        >>> import numpy as np
+        >>> state = initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.))
+        >>> state.phi_var is state.poisson.potential
+        True
+        >>> np.shares_memory(state.phi, state.phi_var.value)
+        True
+        """
+        return self.phi_var.value.reshape(self.grid.shape, order='F')

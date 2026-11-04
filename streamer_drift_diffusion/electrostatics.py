@@ -181,7 +181,8 @@ class PoissonSolver:
         Returns
         -------
         ndarray, shape (nr, nz)
-            解の独立したコピー [V]。金属セルは指定電圧に揃える。
+            potentialの正本とメモリを共有する解の2次元ビュー [V]。
+            金属セルは指定電圧に揃える。求解をまたいで退避する値にはcopy()を使う。
 
         Raises
         ------
@@ -192,7 +193,8 @@ class PoissonSolver:
         -----
         LUには初期推定が不要なため初期値を0にする。境界右辺に比べて小さい電荷変化も省略しない。
         残差の右辺が0の場合、分母下限にはnp.finfo(float).tinyを使う。
-        FiPy内部の変数は変更するが、state.phiへの反映は呼出側が成功時にだけ行う。
+        potentialはstate.phi_varと同じ正本。残差異常・求解例外では求解前の電位へ復元する。
+        退避コピーはこの呼出し中だけ保持し、解を別の状態配列へコピーしない。
 
         Examples
         --------
@@ -210,18 +212,22 @@ class PoissonSolver:
         if not np.isfinite(voltage) or not np.all(np.isfinite(rho)):
             raise RuntimeError("nonfinite Poisson source or voltage")
         self.source.setValue((np.where(self.gas, rho, 0.) + voltage*self.boundary_source).ravel(order='F'))
-        # LUには初期推定が不要。前stepが近い場合も微小な電荷変化を省略させない。
-        self.potential.setValue(0.)
-        self.equation.solve(var=self.potential, solver=self.solver)
-        values = np.asarray(self.potential.value)
-        rhs = self.equation.RHSvector
-        residual = self.equation.matrix*values-rhs
-        self.residual = float(np.max(np.abs(residual))/max(float(np.max(np.abs(rhs))), np.finfo(float).tiny))
-        if not np.all(np.isfinite(values)) or not np.isfinite(self.residual) or self.residual > self.tolerance:
-            raise RuntimeError(f"Poisson solve failed residual check: {self.residual:.6e}")
-        result = values.reshape(self.grid.shape, order='F').copy()
-        result[~self.gas] = voltage
-        return result
+        previous = self.potential.value.copy()
+        try:
+            # LUはゼロ初期値から解き、微小な電荷変化も省略しない。
+            self.potential.setValue(0.)
+            self.equation.solve(var=self.potential, solver=self.solver)
+            values = self.potential.value
+            rhs = self.equation.RHSvector
+            residual = self.equation.matrix*values-rhs
+            self.residual = float(np.max(np.abs(residual))/max(float(np.max(np.abs(rhs))), np.finfo(float).tiny))
+            if not np.all(np.isfinite(values)) or not np.isfinite(self.residual) or self.residual > self.tolerance:
+                raise RuntimeError(f"Poisson solve failed residual check: {self.residual:.6e}")
+            self.potential.setValue(voltage, where=~self.gas.ravel(order='F'))
+        except Exception:
+            self.potential.setValue(previous)
+            raise
+        return self.potential.value.reshape(self.grid.shape, order='F')
 
 
 def calculate_potential(state, config, *, verbose=True, time=0.0, waveform=None):
@@ -272,7 +278,7 @@ def calculate_potential(state, config, *, verbose=True, time=0.0, waveform=None)
     0.0
     """
     voltage = applied_voltage(config, time, waveform=waveform)
-    state.phi[:] = state.poisson.solve(state.rho, voltage)
+    state.poisson.solve(state.rho, voltage)
     return voltage
 
 

@@ -80,7 +80,7 @@ class ElectronTransport:
     grid, mesh : CylindricalGrid and fipy.meshes.mesh.Mesh
         state.gridとそのメッシュへの参照。新たなメッシュは生成しない。
     density : fipy.CellVariable
-        各試行で同期する電子密度 [m⁻³]。旧値を保持する。
+        state.ne_varと同一の電子密度の正本 [m⁻³]。各試行の開始時の旧値を保持する。
     velocity : fipy.FaceVariable
         気体間面の速度ベクトル [m/s]。
     diffusion : fipy.FaceVariable
@@ -160,7 +160,7 @@ class ElectronTransport:
         self.low_gas, high_gas = self.grid.adjacent(self.gas)
         self.interior, self.boundary = self.low_gas & high_gas, self.low_gas ^ high_gas
         self.distance = self.grid.distances(self.gas)
-        self.density = CellVariable(mesh=self.mesh, value=0., hasOld=True)
+        self.density = state.ne_var
         self.velocity = FaceVariable(mesh=self.mesh, rank=1, value=0.)
         self.diffusion = FaceVariable(mesh=self.mesh, value=0.)
         self.absorption = CellVariable(mesh=self.mesh, value=0.)
@@ -188,7 +188,7 @@ class ElectronTransport:
         Raises
         ------
         ValueError
-            格子・電極マスク・面配列形状が初期化時と異なる、または気体のDが負・非有限。
+            電子密度の正本・格子・電極マスク・面配列形状が初期化時と異なる、または気体のDが負・非有限。
         FloatingPointError
             面速度が非有限、または厳密なNumPy例外設定下で係数計算が失敗。
 
@@ -217,8 +217,9 @@ class ElectronTransport:
         0.0
         """
         grid = self.grid
-        if state.grid is not grid or state.ne.shape != self.shape or not np.array_equal(state.gas_mask, self.gas):
-            raise ValueError("transport grid and electrode mask must not change")
+        if (state.ne_var is not self.density or state.grid is not grid
+                or state.ne.shape != self.shape or not np.array_equal(state.gas_mask, self.gas)):
+            raise ValueError("transport density, grid and electrode mask must not change")
         speed = grid.pack_faces(state.vex, state.vey)
         if not np.all(np.isfinite(speed)):
             raise FloatingPointError("nonfinite transport velocity")
@@ -248,6 +249,7 @@ class ElectronTransport:
         ----------
         state : SimulationState
             共有格子と計算配列。中心配列は(nr,nz)、面配列は方向別の全面形状。
+            電極内の電子密度は0とする。共通時間ループではvalidate_densities()が検査する。
         dt : float
             実際の更新幅 [s]。有限かつ正。
         prepared : bool, optional
@@ -269,8 +271,9 @@ class ElectronTransport:
         Notes
         -----
         neだけをその場で更新し、electron_lossesは変更しない。負密度のクリップは行わない。
-        現在値・旧値は毎試行の開始時にstateから再同期し、棄却後の再試行に対応する。
-        数値異常はstate.neに解を反映する前に拒否する。安定刻みの選択は呼出側が担当する。
+        現在値はstate.ne_varと共有し、入力・出力間のコピーは行わない。
+        毎試行の開始時にupdateOld()で旧値を確保し、求解例外・非有限解では旧値へ復元する。
+        負密度を含む試行全体の棄却・7密度の復元と安定刻みの選択は呼出側が担当する。
 
         Examples
         --------
@@ -290,15 +293,16 @@ class ElectronTransport:
         if not np.all(np.isfinite(state.ne)):
             raise FloatingPointError("nonfinite transport density")
         grid = self.grid
-        old = np.where(self.gas, state.ne, 0.)
-        self.density.setValue(old.ravel(order='F'))
         self.density.updateOld()
-        self.equation.solve(var=self.density, dt=dt, solver=self.solver)
-        result = np.asarray(self.density.value).reshape(self.shape, order='F')
+        old = self.density.old.value.reshape(self.shape, order='F')
         low_density, high_density = grid.adjacent(old)
         losses = 2*np.pi*dt*np.bincount(grid.boundary_kind,
             weights=self.boundary_rates*np.where(self.low_gas, low_density, high_density), minlength=3)
-        if not np.all(np.isfinite(result)) or not np.all(np.isfinite(losses)):
-            raise FloatingPointError("nonfinite FiPy transport solution or boundary loss")
-        state.ne[:] = result
+        try:
+            self.equation.solve(var=self.density, dt=dt, solver=self.solver)
+            if not np.all(np.isfinite(state.ne)) or not np.all(np.isfinite(losses)):
+                raise FloatingPointError("nonfinite FiPy transport solution or boundary loss")
+        except Exception:
+            self.density.setValue(self.density.old.value)
+            raise
         return losses

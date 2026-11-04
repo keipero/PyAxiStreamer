@@ -1,5 +1,4 @@
 """FiPy輸送の幾何、独立した流束解、係数更新、数値例外と試行復元。"""
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import warnings
@@ -8,17 +7,15 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
-from streamer_drift_diffusion.grid import initialize_grid
 from streamer_drift_diffusion.reactions import apply_reactions
 from streamer_drift_diffusion.timestepping import advance_density, timestep_limits
 from streamer_drift_diffusion.transport import ElectronTransport
 
 
 def gas_state(nr=3, nz=4, spacing=1.):
-    config = SimulationConfig(nr=nr, nz=nz, delta=spacing, electrode_gap=100.*spacing)
-    grid = initialize_grid(config)
-    return SimpleNamespace(**grid, ne=np.zeros((nr, nz)), de=np.zeros((nr, nz)),
-                           vex=np.zeros((nr+1, nz)), vey=np.zeros((nr, nz+1)))
+    config = SimulationConfig(nr=nr, nz=nz, delta=spacing, electrode_gap=100.*spacing,
+                              voltage=0., nmax=0., background_ionization=0.)
+    return initialize_simulation(config)
 
 
 class FiPyTransportTests(unittest.TestCase):

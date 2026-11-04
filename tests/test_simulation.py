@@ -31,6 +31,7 @@ class SimulationTests(unittest.TestCase):
         assert_array_equal(state.ne, state.n2p + state.o2p)
         matrices = [getattr(state, f.name) for f in fields(SimulationState)
                     if isinstance(getattr(state, f.name), np.ndarray) and getattr(state, f.name).ndim == 2]
+        matrices += [state.ne, state.phi]  # FiPy正本のビューも物理配列の独立性検査へ含める。
         self.assertEqual(len(matrices), 26)
         for i, left in enumerate(matrices):
             for right in matrices[i + 1:]:

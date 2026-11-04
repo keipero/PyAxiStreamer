@@ -474,7 +474,8 @@ class SimulationOutput:
 
         Notes
         -----
-        FiPyのメッシュ・方程式オブジェクトは保存せず、ndarray属性だけをNPZへ含める。
+        FiPyのメッシュ・方程式・CellVariableは保存せず、ndarray属性とne・phiの2次元値だけを含める。
+        ne_var・phi_varはその名前で保存せず、従来どおりne・phiという数値配列を保存する。
 
         Examples
         --------
@@ -494,6 +495,7 @@ class SimulationOutput:
         (self.directory / "failure.json").write_text(
             json.dumps({"step": step, "time_s": time, "error": str(exc)}, indent=2), encoding="utf-8")
         np.savez_compressed(self.directory / "failure_state.npz",
+                            ne=self.state.ne, phi=self.state.phi,
                             **{field.name: getattr(self.state, field.name) for field in fields(self.state)
                                if isinstance(getattr(self.state, field.name), np.ndarray)})
 
