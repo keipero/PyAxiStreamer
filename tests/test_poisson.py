@@ -19,7 +19,7 @@ class PoissonTests(unittest.TestCase):
     def config(self, **changes):
         return replace(SimulationConfig(nr=5, nz=7, delta=.1, electrode_gap=.3,
             cathode_radius=.2, voltage=500., nmax=0., background_ionization=0.,
-            max_step=0, poisson_tolerance=1e-12), **changes)
+            t_end=1e-12, poisson_tolerance=1e-12), **changes)
 
     def test_dense_reference_with_odd_even_grids_and_both_voltage_signs(self):
         for nr, nz in ((5, 7), (6, 8), (5, 8)):

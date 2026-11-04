@@ -2,6 +2,8 @@
 
 作成日: 2026-11-04（日本時間）。対象ブランチ: `feature/fipy-integration`。
 
+最新の時計・出力仕様は[時間ループ統合](TIME_LOOP_UNIFICATION.md)を参照。
+
 **現行PoissonはFiPyへ移行済み。** 最新の構成・検証・性能・削減行数は
 [Poisson移行結果](FIPY_POISSON_MIGRATION.md)を参照。以下のRB-SOR維持の記述は各段階の履歴である。
 

@@ -17,12 +17,12 @@ def main():
     parser.add_argument("--julia", default="julia")
     args = parser.parse_args()
     cases = {
-        "small_dc": SimulationConfig(nr=12, nz=10, max_step=20, z0=70e-6, cathode_radius=30e-6),
-        "small_impulse": SimulationConfig(nr=12, nz=10, max_step=20, z0=70e-6,
+        "small_dc": SimulationConfig(nr=12, nz=10, t_end=21e-12, z0=70e-6, cathode_radius=30e-6),
+        "small_impulse": SimulationConfig(nr=12, nz=10, t_end=21e-12, z0=70e-6,
             cathode_radius=30e-6, voltage_mode="impulse", impulse_time_scale=2.),
-        "small_negative": SimulationConfig(nr=12, nz=10, max_step=20, z0=70e-6,
+        "small_negative": SimulationConfig(nr=12, nz=10, t_end=21e-12, z0=70e-6,
             cathode_radius=30e-6, voltage=-4000.),
-        "standard_100": SimulationConfig(max_step=100),
+        "standard_100": SimulationConfig(t_end=101e-12),
     }
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)

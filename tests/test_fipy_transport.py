@@ -10,7 +10,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation
 from streamer_drift_diffusion.grid import initialize_grid
 from streamer_drift_diffusion.reactions import apply_reactions
-from streamer_drift_diffusion.timestepping import try_density_step
+from streamer_drift_diffusion.timestepping import advance_density
 from streamer_drift_diffusion.transport import ElectronTransport
 
 
@@ -134,7 +134,7 @@ class FiPyTransportTests(unittest.TestCase):
 
     def test_failed_reaction_resynchronizes_fipy_old_values_and_losses(self):
         config = SimulationConfig(nr=5, nz=7, delta=1e-4, electrode_gap=3e-4,
-                                  voltage=0., background_ionization=0., electron_diffusion=.5)
+                                  voltage=0., background_ionization=0., electron_diffusion=.5, adaptive_timestep=True)
         state = initialize_simulation(config)
         state.ne[:] = np.random.default_rng(7).random(state.ne.shape)*state.gas_mask*1e15
         state.vex[:] = 500.
@@ -153,7 +153,7 @@ class FiPyTransportTests(unittest.TestCase):
                 current.ne[current.gas_mask] = -1.
 
         with patch('streamer_drift_diffusion.reactions.apply_reactions', side_effect=fail_first):
-            actual, retries = try_density_step(state, config, config.dt, transport=operator)
+            actual, retries = advance_density(state, config, config.dt, transport=operator)
         expected_loss = ElectronTransport(reference, config.delta).step(reference, config.dt/2)
         apply_reactions(reference, config, dt=config.dt/2)
         self.assertEqual(retries, 1)

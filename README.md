@@ -10,23 +10,23 @@
 ```powershell
 python -m pip install -r requirements.txt
 $env:FIPY_SOLVERS = "scipy"
-python -m streamer_drift_diffusion --steps=0 --output=outputdata_smoke
+python -m streamer_drift_diffusion --t-end=1e-12 --output=outputdata_smoke
 ```
 
 可視化用の追加依存は`python -m pip install ".[notebook]"`で導入できます。
 `run_streamer.ipynb`は同じ仮想環境のカーネルを使います。旧版を読み込み済みならカーネルを再起動してください。
 
 ```powershell
-# 標準200×150セル、DC 4 kV、5001更新
+# 標準200×150セル、DC 4 kV、終了時刻5.001 ns
 python -m streamer_drift_diffusion
 
 # 小格子の確認計算
-python -m streamer_drift_diffusion --nr=12 --nz=16 --delta=1e-4 --electrode-gap=6e-4 --steps=2 --no-output
+python -m streamer_drift_diffusion --nr=12 --nz=16 --delta=1e-4 --electrode-gap=6e-4 --t-end=3e-12 --no-output
 
 # インパルス波形
 python -m streamer_drift_diffusion --voltage-mode=impulse --impulse-peak=5000 --output=outputdata_impulse
 
-# 適応刻み。出力先は既存CSVのないフォルダを指定する
+# 適応刻み。固定／適応とも出力先は既存CSVのないフォルダを指定する
 python -m streamer_drift_diffusion --adaptive-timestep --t-end=5.001e-9 --output-interval=1e-10 --output=outputdata_adaptive
 ```
 
@@ -62,7 +62,7 @@ LUには初期推定が不要なため、初期値を0にして解き、微小�
 ゼロ右辺の分母には浮動小数点のtinyを使います。
 
 ```powershell
-python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --steps=0 --no-output
+python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-output
 ```
 
 `poisson_tolerance`の既定値は1e-10です。旧SORの電位更新量の許容値とは意味が異なります。
@@ -87,15 +87,18 @@ PETScは未導入です。Windows用PETSc本体とpetsc4pyの導入・検証は�
 
 電荷源 → 総電位 → 電場 → 輸送係数 → 反応係数 → 電子輸送 → 反応の順に計算します。
 
-固定モードは従来仕様を維持しています。`max_step`は最後の番号なので更新回数は`max_step+1`です。
-step 0のCSVは1回更新後で、電場・電位は密度更新前、密度は更新後の値です。最後の番号が保存間隔に合わなければ最終CSVは追加しません。
-背景電離は毎更新の密度加算量で、固定モードではdtを掛けません。
+固定／適応とも同じ実行ループを使い、初期状態をt=0で保存します。
+`t_end`まで計算し、`output_interval`ごとの出力と最終状態を保存します。全フレームで電位・電場・密度を同じ時刻に揃えます。
+固定モードは`dt`を基本幅とし、出力時刻・波形の折れ点・終端に合わせる部分だけ短縮します。
+実際の刻みが合算輸送CFL・反応・誘電緩和の安全上限を超える場合、または更新後の検査に失敗した場合は停止します。
+適応モードは安定条件と成長率上限から刻みを選び、失敗した試行の7密度を復元してdtを半減します。
+背景加算量は両モードとも`background_ionization*actual_dt/config.dt`です。FiPy輸送の現在値・旧値も各試行の開始時に同期します。
+dt_minへの無条件な切上げは行いません。イベントまでの端数は安全側の短縮なのでdt_min未満も許します。
+受理した更新数が`max_steps`に達し、終了時刻へ到達していなければ失敗として停止します。
 
-適応モードは初期状態をt=0で保存し、指定の実時刻と最終時刻に電場・電位・密度を揃えます。
-合算輸送CFL、反応、誘電緩和の制約を使い、失敗した試行の7密度を復元してdtを半減します。
-背景加算量は`background_ionization*actual_dt/config.dt`です。FiPy輸送の現在値・旧値も各試行の開始時に同期します。
-波形の折れ点を飛び越さず、出力時刻・終端への端数合わせは安全側に短縮します。
-dt_minへの無条件な切上げは行いません。適応モードの終了条件は`t_end`で、`max_step`は使いません。
+旧`max_step`・`write_every`・`adaptive_max_steps`と、CLIの`--steps`・`--write-every`・`--adaptive-max-steps`は廃止しました。
+旧`max_step=N`と同じ計算時間は`t_end=(N+1)*dt`です。ただしファイル番号は出力番号へ変わり、0番は未更新の初期状態です。
+刻みの分割や保存時刻が変わる条件では、旧計算との数値一致を自動的に保証しません。
 
 | 設定 | 内容・既定値 |
 |---|---|
@@ -107,8 +110,9 @@ dt_minへの無条件な切上げは行いません。適応モードの終了�
 | `dt_chemistry_fraction` | 反応割合上限、0.1 |
 | `dt_growth_factor` | 刻みの増加上限倍率、1.2 |
 | `max_step_retries` | 試行の縮小・再試行上限、12 |
-| `adaptive_max_steps` | 受理step上限、1000000 |
-| `output_interval` | 保存間隔[s]、省略時write_every*dt |
+| `max_steps` | 共通の受理step停止上限、1000000 |
+| `t_end` | 共通の終了時刻[s]、5.001e-9。0なら初期状態のみ |
+| `output_interval` | 共通の保存間隔[s]、1e-10 |
 
 CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます。
 
@@ -124,14 +128,14 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `ne*.csv` | 電子密度[m⁻³] |
 | `Ex*.csv`・`Ey*.csv`・`absE*.csv` | 中心の換算電場[Td] |
 | `phi*.csv` | 総電位[V] |
-| `times.csv` | 適応モードの出力番号・step・実時刻 |
-| `timestep_history.csv` | 適応モードの刻み・制約・流出収支 |
-| `run_config.json` | 適応モードの設定・ライブラリ版・FiPy求解方式 |
-| `failure.json`・`failure_state.npz` | 適応モードの停止診断。NPZは数値配列のみ |
+| `times.csv` | 両モードの出力番号・step・実時刻 |
+| `timestep_history.csv` | 両モードの刻み・制約・流出収支 |
+| `run_config.json` | 両モードの設定・ライブラリ版・FiPy求解方式 |
+| `failure.json`・`failure_state.npz` | 両モードの停止診断。NPZは数値配列のみ |
 
 保存済み結果は`notebooks/`の描画Notebook、`notebooks/animate_abs_ez.py`で参照できます。
-入力フォルダを計算結果に合わせ、適応出力では`times.csv`も残してください。
-従来の固定出力を読む場合は、描画側のdtを計算条件に合わせます。
+入力フォルダを計算結果に合わせ、両モードとも`times.csv`を残してください。番号から時刻を推測しないでください。
+過去の固定出力にtimes.csvがない場合に限り、描画側のdtを旧計算条件に合わせます。
 
 ## コード構成
 
@@ -144,12 +148,27 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `transport.py` | FiPy電子輸送と吸収・流出数 |
 | `transport_coefficients.py` | 面の移動度・速度、中心のD |
 | `reactions.py` | 反応係数と密度更新 |
-| `timestepping.py` | 安定刻み、密度検査、試行の受理・復元 |
-| `simulation.py` | 固定／適応の時間発展 |
+| `timestepping.py` | 安定刻み、共通のadvance_density()、試行の受理・復元 |
+| `simulation.py` | 固定／適応の共通時間ループと同時刻の電場・係数準備 |
 | `voltage_waveforms.py` | DC・インパルス入力、補間・単位換算 |
 | `output.py` | CSV・メタデータ・停止診断 |
 
 ## 検証
+
+計算本体の関数・クラスにはNumPy形式のdocstringを付けます。
+引数・戻り値・例外に加え、物理量の単位、配列形状、状態を更新する範囲を説明し、
+可能な限り小格子や一時フォルダで実行できる`Examples`を添えます。
+docstringはコード削減の対象にせず、削減量は説明を除く実装行数で評価します。
+今回の整備では全69定義にdocstring、68定義に`Examples`があり、
+全モジュールのdoctest計328項目を確認しました。
+
+例えば時間ループの`Examples`は次のコマンドで実行できます。
+
+```powershell
+python -c "import doctest; import streamer_drift_diffusion.simulation as m; doctest.testmod(m, raise_on_error=True)"
+```
+
+数値モデルと入出力の回帰テストは次で実行します。
 
 ```powershell
 python -m unittest discover -s tests
@@ -160,6 +179,7 @@ python -m unittest discover -s tests
 輸送の粒子収支、Gaussian格子収束、時間精度、試行の復元、CSV・CLI・波形も検証対象です。
 RB-SORの更新順やスレッド数に固有のテストは、新しいPoissonの物理・数値検証へ置き換えています。
 
+- [時間ループ・出力統合の仕様と検証](TIME_LOOP_UNIFICATION.md)
 - [Poisson移行の結果・精度・性能](FIPY_POISSON_MIGRATION.md)
 - [FiPy輸送移行と格子共通化の履歴](FIPY_MIGRATION_PLAN.md)
 - [コード削減の設計案](CODE_REDUCTION_PROPOSAL.md)

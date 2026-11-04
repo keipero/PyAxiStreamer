@@ -22,7 +22,7 @@ from streamer_drift_diffusion.transport_coefficients import calculate_transport_
 class StaggeredTests(unittest.TestCase):
     def config(self, **kwargs):
         return replace(SimulationConfig(nr=6, nz=8, delta=.1, electrode_gap=2.,
-            voltage=1., nmax=0., background_ionization=0., max_step=0), **kwargs)
+            voltage=1., nmax=0., background_ionization=0., t_end=1e-12), **kwargs)
 
     def prescribe(self, state, config, potential):
         """既知の電位 [Td*m]と境界値を与え、場を計算する。"""
@@ -219,7 +219,7 @@ class StaggeredTests(unittest.TestCase):
                 assert_allclose(saved, values, rtol=6e-7, atol=1e-12)
 
     def test_failure_snapshot_contains_complete_face_arrays(self):
-        config = self.config(adaptive_timestep=True, t_end=3e-12, adaptive_max_steps=1)
+        config = self.config(adaptive_timestep=True, t_end=3e-12, max_steps=1)
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TimestepError):
                 run_simulation(config, output_dir=directory, verbose=False)

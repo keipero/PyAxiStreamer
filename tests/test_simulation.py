@@ -16,7 +16,7 @@ from streamer_drift_diffusion.reactions import apply_reactions
 
 class SimulationTests(unittest.TestCase):
     def small_config(self, **kwargs):
-        return replace(SimulationConfig(nr=12, nz=10, max_step=2,
+        return replace(SimulationConfig(nr=12, nz=10, t_end=3e-12,
                        z0=70e-6, cathode_radius=30e-6), **kwargs)
 
     def test_base_potential_boundaries(self):
@@ -73,9 +73,9 @@ class SimulationTests(unittest.TestCase):
         state.k1[:] = 1e-17
         state.k2[:] = 1e-18
         state.k3[:] = 1e-43
-        apply_reactions(state, config)
+        apply_reactions(state, config, dt=config.dt)
         assert_allclose(state.n2p + state.o2p, state.ne + state.om + state.o2m, rtol=1e-15)
-        zero = run_simulation(self.small_config(voltage=0., nmax=0., max_step=2),
+        zero = run_simulation(self.small_config(voltage=0., nmax=0., t_end=3e-12),
                               write_output=False, verbose=False)
         assert_array_equal(zero.ne, np.full((12, 10), 3 * config.background_ionization))
 
@@ -97,14 +97,14 @@ class SimulationTests(unittest.TestCase):
             path = Path(directory) / "triangle.txt"
             path.write_text("# ns kV\n0 0\n0.001 1\n0.002 0\n", encoding="utf-8")
             config = self.small_config(voltage_mode="impulse", impulse_peak_voltage=1000.,
-                impulse_time_scale=2., voltage_waveform_file=str(path), max_step=1,
+                impulse_time_scale=2., voltage_waveform_file=str(path), t_end=2e-12,
                 nmax=0., background_ionization=0.)
             table = load_voltage_waveform(path)
             self.assertEqual(applied_voltage(config, -1e-9, waveform=table), 0.)
             self.assertEqual(applied_voltage(config, 1e-9, waveform=table), 0.)
             self.assertAlmostEqual(applied_voltage(config, 1e-12, waveform=table), 500.)
             final = run_simulation(config, write_output=False, verbose=False)
-            direct = run_simulation(replace(config, voltage_mode='dc', voltage=500.), write_output=False, verbose=False)
+            direct = run_simulation(replace(config, voltage_mode='dc', voltage=1000.), write_output=False, verbose=False)
             assert_allclose(final.phi, direct.phi, rtol=1e-14)
             assert_array_equal(final.ne, np.zeros_like(final.ne))
 
@@ -129,7 +129,7 @@ class SimulationTests(unittest.TestCase):
                     load_voltage_waveform(path)
 
     def test_invalid_config(self):
-        for kwargs in ({"nr": 1}, {"nz": 1}, {"nr": 2.5}, {"write_every": 0}, {"max_step": -1},
+        for kwargs in ({"nr": 1}, {"nz": 1}, {"nr": 2.5}, {"output_interval": 0}, {"t_end": -1},
                        {"voltage_mode": "unknown"}, {"delta": 0}, {"dt": -1}, {"poisson_tolerance": 0}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 initialize_simulation(self.small_config(**kwargs))
@@ -148,14 +148,15 @@ class SimulationTests(unittest.TestCase):
             write_c_matrix(directory / "order.csv", np.array([[1., 2.], [3., 4.]]))
             self.assertEqual((directory / "order.csv").read_bytes(),
                              b"1.000000e+00\n2.000000e+00\n3.000000e+00\n4.000000e+00\n")
-            final = run_simulation(self.small_config(write_every=2, max_step=3), output_dir=directory, verbose=False)
+            (directory / "order.csv").unlink()
+            final = run_simulation(self.small_config(output_interval=2e-12, t_end=4e-12), output_dir=directory, verbose=False)
             self.assertTrue((directory / "ne0.csv").exists())
             self.assertTrue((directory / "ne2.csv").exists())
             self.assertFalse((directory / "ne3.csv").exists())
             self.assertTrue(np.all(np.isfinite(final.ne)))
             self.assertTrue(np.all(final.ne >= 0))
             missing = directory / "not_created"
-            run_simulation(self.small_config(max_step=0), output_dir=missing, write_output=False, verbose=False)
+            run_simulation(self.small_config(t_end=1e-12), output_dir=missing, write_output=False, verbose=False)
             self.assertFalse(missing.exists())
 
 

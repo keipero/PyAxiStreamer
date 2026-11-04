@@ -17,7 +17,7 @@ from streamer_drift_diffusion.output import load_output_times
 from streamer_drift_diffusion.transport_coefficients import electron_mobility
 from streamer_drift_diffusion.timestepping import (
     DENSITY_NAMES, TimestepError, chemistry_limit, dielectric_limit,
-    timestep_limits, transport_limit, try_density_step,
+    timestep_limits, transport_limit, advance_density,
 )
 
 
@@ -98,7 +98,7 @@ class AdaptiveTests(unittest.TestCase):
             return np.zeros(3)
 
         with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail_first):
-            dt, retries = try_density_step(state, config, config.dt)
+            dt, retries = advance_density(state, config, config.dt)
         self.assertEqual(retries, 1)
         self.assertEqual(dt, config.dt / 2)
         assert_array_equal(state.ne, np.full_like(state.ne, config.background_ionization / 2))
@@ -115,7 +115,7 @@ class AdaptiveTests(unittest.TestCase):
 
         with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail):
             with self.assertRaises(TimestepError):
-                try_density_step(state, config, config.dt)
+                advance_density(state, config, config.dt)
         for name in DENSITY_NAMES:
             assert_array_equal(getattr(state, name), original[name])
 
@@ -128,7 +128,7 @@ class AdaptiveTests(unittest.TestCase):
         state.n2p[:] = state.ne
         state.k1[:] = 1e-18
         dt = config.dt_safety_factor * dielectric_limit(state, config)
-        actual, retries = try_density_step(state, config, dt)
+        actual, retries = advance_density(state, config, dt)
         self.assertEqual(retries, 0)
         self.assertEqual(actual, dt)
 
@@ -184,7 +184,7 @@ class AdaptiveTests(unittest.TestCase):
 
     def test_accepted_step_guard_stops_instead_of_returning_early(self):
         with self.assertRaises(TimestepError):
-            run_simulation(self.config(adaptive_max_steps=1), write_output=False, verbose=False)
+            run_simulation(self.config(max_steps=1), write_output=False, verbose=False)
 
     def test_dense_plasma_shrinks_dt_and_obeys_all_limits(self):
         config = self.config(voltage=500., nmax=1e22, t_end=1e-12)
@@ -205,7 +205,7 @@ class AdaptiveTests(unittest.TestCase):
                        {'dt_min': 2e-12}, {'dt_safety_factor': 0.}, {'dt_cfl_number': 1.1},
                        {'dt_chemistry_fraction': 0.}, {'output_interval': 0.},
                        {'dt_growth_factor': .9}, {'max_step_retries': -1},
-                       {'adaptive_max_steps': True}, {'poisson_tolerance': 0},
+                       {'max_steps': True}, {'poisson_tolerance': 0},
                        {'nitrogen_fraction': .7}, {'background_ionization': -1.}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 initialize_simulation(self.config(**kwargs))

@@ -16,7 +16,7 @@ from streamer_drift_diffusion import SimulationConfig, initialize_simulation, ru
 from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.grid import initialize_grid
 from streamer_drift_diffusion.timestepping import (
-    TimestepError, diffusion_limit, transport_limit, timestep_limits, try_density_step,
+    TimestepError, diffusion_limit, transport_limit, timestep_limits, advance_density,
 )
 from streamer_drift_diffusion.__main__ import main
 
@@ -36,7 +36,7 @@ class DiffusionTests(unittest.TestCase):
     def config(self, **kwargs):
         return replace(SimulationConfig(nr=8, nz=12, delta=1e-4, electrode_gap=6e-4,
             z0=4e-4, voltage=0., nmax=0., background_ionization=0.,
-            electron_diffusion=.5, max_step=0), **kwargs)
+            electron_diffusion=.5, t_end=1e-12), **kwargs)
 
     def step(self, state, dt, coefficient=None):
         if coefficient is not None:
@@ -142,14 +142,14 @@ class DiffusionTests(unittest.TestCase):
 
     def test_fixed_mode_rejects_unsafe_dt_and_adaptive_mode_shrinks_it(self):
         config = self.config(dt=1e-6, dt_max=1e-6, electron_diffusion=1.,
-                             adaptive_timestep=False, t_end=1e-8)
-        with self.assertRaisesRegex(TimestepError, 'drift-diffusion CFL'):
+                             adaptive_timestep=False, t_end=1e-8, output_interval=1e-8)
+        with self.assertRaisesRegex(TimestepError, 'fixed dt exceeds'):
             run_simulation(config, write_output=False, verbose=False)
         state = run_simulation(replace(config, adaptive_timestep=True), write_output=False, verbose=False)
         assert_array_equal(state.ne, 0.)
 
     def test_rejected_diffusion_trial_rolls_back_density_and_losses(self):
-        config = self.config()
+        config = self.config(adaptive_timestep=True)
         state = initialize_simulation(config)
         state.ne[:] = 1e15*state.gas_mask
         initial = np.sum(state.ne*state.volume)*2*np.pi
@@ -166,7 +166,7 @@ class DiffusionTests(unittest.TestCase):
 
         dt = transport_limit(state, config)*.1
         with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail_first):
-            accepted, retries = try_density_step(state, config, dt)
+            accepted, retries = advance_density(state, config, dt)
         self.assertEqual(retries, 1)
         self.assertEqual(accepted, dt/2)
         final = np.sum(state.ne*state.volume)*2*np.pi

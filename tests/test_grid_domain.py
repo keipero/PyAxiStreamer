@@ -15,7 +15,7 @@ from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.grid import initialize_grid
 from poisson_reference import dense_poisson
 from streamer_drift_diffusion.reactions import apply_reactions
-from streamer_drift_diffusion.timestepping import transport_limit, chemistry_limit, dielectric_limit, try_density_step
+from streamer_drift_diffusion.timestepping import transport_limit, chemistry_limit, dielectric_limit, advance_density
 from streamer_drift_diffusion.simulation_types import gap_length
 from streamer_drift_diffusion.simulation import prepare_step
 
@@ -24,7 +24,7 @@ class GridDomainTests(unittest.TestCase):
     def config(self, **kwargs):
         return replace(SimulationConfig(nr=12, nz=15, delta=1e-4, electrode_gap=8e-4,
             cathode_radius=3e-4, z0=6e-4, voltage=500., poisson_tolerance=1e-11,
-            max_step=2, background_ionization=0.), **kwargs)
+            t_end=3e-12, background_ionization=0.), **kwargs)
 
     def test_gap_is_independent_of_domain_and_mask_tracks_shape(self):
         config = self.config()
@@ -115,7 +115,7 @@ class GridDomainTests(unittest.TestCase):
         assert_allclose((chemistry_limit(state, config), dielectric_limit(state, config)), expected)
 
     def test_rejected_transport_does_not_accumulate_boundary_loss(self):
-        config = self.config()
+        config = self.config(adaptive_timestep=True)
         state = initialize_simulation(config)
         state.vex[:] = 1e5
         state.vey[:] = 1e5
@@ -133,7 +133,7 @@ class GridDomainTests(unittest.TestCase):
             return losses
 
         with patch.object(ElectronTransport, 'step', autospec=True, side_effect=fail_first):
-            dt, retries = try_density_step(state, config, config.dt)
+            dt, retries = advance_density(state, config, config.dt)
         self.assertEqual(retries, 1)
         self.assertEqual(dt, config.dt/2)
         final = np.sum(state.ne*state.volume)*2*np.pi

@@ -15,30 +15,39 @@ from .transport_coefficients import calculate_transport_coefficients
 def validate_config(config):
     """初期化と時間発展に使う主要な設定値の範囲を検査する。
 
-    Args:
-        config (SimulationConfig): 格子数、時間刻み、初期分布の幅、
-            電圧モード、Poisson求解条件などを保持する計算設定。
+    Parameters
+    ----------
+    config : SimulationConfig
+        格子数、時間刻み、初期分布の幅、
+        電圧モード、Poisson求解条件などを保持する計算設定。
 
-    Raises:
-        ValueError: nr・nzが2以上、max_stepが0以上、write_everyが1以上の
-            整数でない場合。これらの値にboolを指定した場合も送出する。
-            voltage_modeがdc・impulse以外、またはvoltageが有限でない場合。
-            delta、temperature、sr0、sz0、cathode_radius、dt、
-            gas_constant、vacuum_permittivity、poisson_toleranceは、
-            いずれも有限かつ正である必要がある。
-            impulseモードでは、振幅と時間倍率が
-            validate_impulse_parameters()の条件を満たさない場合も送出する。
+    Returns
+    -------
+    None
+        検査に成功した場合、そのまま呼び出し元へ戻る。
 
-    Returns:
-        None: 検査に成功した場合、そのまま呼び出し元へ戻る。
+    Raises
+    ------
+    ValueError
+        nr・nzが2以上の整数でない場合。boolも指定できない。
+        voltage_modeがdc・impulse以外、またはvoltageが有限でない場合。
+        delta、temperature、sr0、sz0、cathode_radius、dt、
+        gas_constant、vacuum_permittivity、poisson_tolerance、electrode_gapは、
+        いずれも有限かつ正である必要がある。
+        impulseモードでは、振幅と時間倍率が
+        validate_impulse_parameters()の条件を満たさない場合も送出する。
 
-    Notes:
-        設定値は変更しない。全フィールドを網羅する検査ではなく、
-        固定モードではガス組成比の和や初期密度の範囲、波形ファイルの内容を
-        検査しない。適応モードではtimestepping.validate_adaptive_config()で
-        刻み設定・背景供給・ガス組成比も追加検査する。
+    Notes
+    -----
+    設定値は変更しない。両モード共通でvalidate_time_config()により、
+    時計・刻み設定・背景供給・ガス組成比も検査する。
+
+    Examples
+    --------
+    >>> from streamer_drift_diffusion import SimulationConfig
+    >>> validate_config(SimulationConfig(nr=2, nz=3, t_end=0.))
     """
-    for name, minimum in (("nr", 2), ("nz", 2), ("max_step", 0), ("write_every", 1)):
+    for name, minimum in (("nr", 2), ("nz", 2)):
         value = getattr(config, name)
         if not isinstance(value, Integral) or isinstance(value, bool) or value < minimum:
             raise ValueError(f"{name} must be an integer >= {minimum}")
@@ -61,30 +70,45 @@ def validate_config(config):
             raise ValueError(f"{name} must be finite and positive")
     if config.voltage_mode == "impulse":
         validate_impulse_parameters(config)
-    if config.adaptive_timestep:
-        from .timestepping import validate_adaptive_config
-        validate_adaptive_config(config)
+    from .timestepping import validate_time_config
+    validate_time_config(config)
 
 
 def initialize_simulation(config=None):
     """共有格子・電極マスク・FiPy Poisson方程式・初期粒子分布を生成する。
 
-    Args:
-        config (SimulationConfig, optional): Noneなら既定値。計算条件はここに集約。
+    Parameters
+    ----------
+    config : SimulationConfig, optional
+        Noneなら既定値。計算条件はここに集約。
 
-    Returns:
-        SimulationState: 独立した状態配列。座標等は1次元、
-            密度・電位・中心電場等は(nr,nz)。半径面の電場・速度・移動度は
-            (nr+1,nz)、軸方向面は(nr,nz+1)。electron_lossesは長さ3。
+    Returns
+    -------
+    SimulationState
+        独立した状態配列。座標等は1次元、
+        密度・電位・中心電場等は(nr,nz)。半径面の電場・速度・移動度は
+        (nr+1,nz)、軸方向面は(nr,nz+1)。electron_lossesは長さ3。
 
-    Raises:
-        ValueError: 不正設定、または気体セルのない格子。
+    Raises
+    ------
+    ValueError
+        不正設定、または気体セルのない格子。
 
-    Notes:
-        共有メッシュ上のFiPy Poisson方程式と境界電位を初期化する。
-        初期phiと電場は0。時間発展時に総電位を直接求解する。
-        初期の中性粒子・電荷中性Gaussian・背景供給は気体セルに限定する。
-        電極内の全密度と累積流出電子数は0。gas_maskはbool、他はfloat64。"""
+    Notes
+    -----
+    共有メッシュ上のFiPy Poisson方程式と境界電位を初期化する。
+    初期phiと電場は0。時間発展時に総電位を直接求解する。
+    初期の中性粒子・電荷中性Gaussian・背景供給は気体セルに限定する。
+    電極内の全密度と累積流出電子数は0。gas_maskはbool、他はfloat64。
+
+    Examples
+    --------
+    >>> from streamer_drift_diffusion import SimulationConfig
+    >>> config = SimulationConfig(nr=2, nz=3, t_end=0.)
+    >>> state = initialize_simulation(config)
+    >>> state.ne.shape, state.vex.shape, state.vey.shape
+    ((2, 3), (3, 3), (2, 4))
+    """
     config = SimulationConfig() if config is None else config
     validate_config(config)
     arrays = initialize_grid(config)
