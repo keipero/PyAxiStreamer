@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
-from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation, poisson_calc
+from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
 from streamer_drift_diffusion.simulation import prepare_step, _same_time
 from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.reactions import apply_reactions
@@ -205,7 +205,7 @@ class AdaptiveTests(unittest.TestCase):
                        {'dt_min': 2e-12}, {'dt_safety_factor': 0.}, {'dt_cfl_number': 1.1},
                        {'dt_chemistry_fraction': 0.}, {'output_interval': 0.},
                        {'dt_growth_factor': .9}, {'max_step_retries': -1},
-                       {'adaptive_max_steps': True}, {'poisson_max_iterations': 0},
+                       {'adaptive_max_steps': True}, {'poisson_tolerance': 0},
                        {'nitrogen_fraction': .7}, {'background_ionization': -1.}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 initialize_simulation(self.config(**kwargs))
@@ -300,11 +300,11 @@ class AdaptiveTests(unittest.TestCase):
                     self.assertTrue(np.all(getattr(state, name) >= 0))
                 self.assertTrue(np.all(np.isfinite(state.abs_e)))
 
-    def test_poisson_iteration_cap(self):
+    def test_poisson_nonfinite_source_is_rejected(self):
         state = initialize_simulation(self.config())
-        with self.assertRaises(RuntimeError):
-            poisson_calc(state.pphi, np.ones_like(state.ne), state.p1, state.p2, state.p3,
-                         state.p4, state.p5, max_iterations=1, tolerance=1e-15, verbose=False)
+        with self.assertRaisesRegex(RuntimeError, 'nonfinite'):
+            state.poisson.solve(np.full_like(state.ne, np.nan), 0.)
+
 
 
 if __name__ == '__main__':

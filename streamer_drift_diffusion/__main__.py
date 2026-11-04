@@ -18,9 +18,8 @@ def main(argv=None):
     parser.add_argument("--waveform", default=defaults.voltage_waveform_file)
     parser.add_argument("--nr", type=int, default=defaults.nr)
     parser.add_argument("--nz", type=int, default=defaults.nz)
+    parser.add_argument("--poisson-tolerance", type=float, default=defaults.poisson_tolerance, help="Relative Poisson RHS residual tolerance")
     parser.add_argument("--delta", type=float, default=defaults.delta, help="Uniform cell spacing [m]")
-    parser.add_argument("--poisson-omega", type=float, default=defaults.poisson_omega)
-    parser.add_argument("--num-threads", type=int, default=defaults.num_threads, help="Numba threads (serial without Numba)")
     parser.add_argument("--electrode-gap", type=float, default=defaults.electrode_gap, help="Electrode tip height above ground [m]")
     parser.add_argument("--electron-diffusion", type=float, default=defaults.electron_diffusion,
                         help="Constant verification coefficient [m^2/s]; 0 disables diffusion")
@@ -42,9 +41,9 @@ def main(argv=None):
     config = SimulationConfig(max_step=args.steps, write_every=args.write_every,
         voltage_mode=args.voltage_mode, voltage=args.voltage,
         impulse_peak_voltage=args.impulse_peak, impulse_time_scale=args.impulse_time_scale,
-        voltage_waveform_file=args.waveform, nr=args.nr, nz=args.nz, poisson_omega=args.poisson_omega,
-        num_threads=args.num_threads, electrode_gap=args.electrode_gap, delta=args.delta,
-        electron_diffusion=args.electron_diffusion,
+        voltage_waveform_file=args.waveform, nr=args.nr, nz=args.nz,
+        electrode_gap=args.electrode_gap, delta=args.delta,
+        electron_diffusion=args.electron_diffusion, poisson_tolerance=args.poisson_tolerance,
         adaptive_timestep=args.adaptive_timestep, t_end=args.t_end, dt=args.dt,
         dt_max=args.dt_max, dt_min=args.dt_min, dt_safety_factor=args.dt_safety_factor,
         dt_cfl_number=args.dt_cfl_number, dt_chemistry_fraction=args.dt_chemistry_fraction,

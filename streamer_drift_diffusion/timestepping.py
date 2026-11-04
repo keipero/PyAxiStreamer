@@ -39,8 +39,7 @@ def validate_adaptive_config(config):
         value = getattr(config, name)
         if not math.isfinite(value) or not 0 < value <= 1:
             raise ValueError(f"{name} must be in (0, 1]")
-    for name, minimum in (("max_step_retries", 0), ("adaptive_max_steps", 1),
-                          ("poisson_max_iterations", 1)):
+    for name, minimum in (("max_step_retries", 0), ("adaptive_max_steps", 1)):
         value = getattr(config, name)
         if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < minimum:
             raise ValueError(f"{name} must be an integer >= {minimum}")

@@ -32,14 +32,13 @@ def advance_step(state, config, time, *, waveform=None, verbose=True, transport=
     Args:
         state (SimulationState): 更新対象の計算状態。電位、電場、速度、
             反応係数、粒子密度などの配列をその場で更新する。
-        config (SimulationConfig): 時間刻み、印加電圧、Poisson反復条件、
+        config (SimulationConfig): 時間刻み、印加電圧、Poisson求解条件、
             背景電離などの計算設定。
         time (float): このstepの印加電圧を評価する時刻 [s]。
         waveform (VoltageWaveform, optional): 読み込み済みのインパルス波形。
             Noneの場合、インパルスモードではconfig.voltage_waveform_file
             から読み込む。DCモードでは使用しない。既定値はNone。
-        verbose (bool, optional): Trueの場合、Poisson反復の進捗を
-            config.poisson_progress_everyに従って表示する。既定値はTrue。
+        verbose (bool, optional): 進捗表示の指定。FiPyのLU求解は反復表示をしない。
         transport (ElectronTransport, optional): 再利用するFiPy輸送オブジェクト。
             省略時はこの呼出し用に生成する。
 
@@ -72,7 +71,6 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
             時間刻み、終了stepなどの計算設定。Noneの場合は
             SimulationConfig()の既定値を使う。既定値はNone。
             adaptive_timestep=Trueの場合はt_end [s]の指定が必要。
-            num_threadsは初期化時の単位電位求解の前にNumbaへ適用する。
         output_dir (str or os.PathLike, optional): CSVの保存先。
             相対パスは現在の作業ディレクトリを基準とする。
             出力有効時は必要な親フォルダも作成する。既定値は"outputdata"。
@@ -81,7 +79,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
             CSV保存を行わない。既定値はTrue。
         verbose (bool, optional): Trueの場合、config.write_everyごとに
             stepと時刻 [ns]、インパルスモードでは印加電圧 [V] も表示する。
-            Poisson反復の進捗表示も有効にする。既定値はTrue。
+            既定値はTrue。FiPyのLU求解は反復進捗を表示しない。
 
     Returns:
         SimulationState: 最終stepの更新を終えた計算状態。
@@ -89,7 +87,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
             適応モードでは電場を再計算し、全てt_endの状態を返す。
 
     Raises:
-        ValueError: 設定が不正、またはnum_threadsがNumbaの利用上限を超える場合。
+        ValueError: 設定が不正な場合。
         TimestepError: 適応モードで必要刻みがdt_min未満、再試行失敗、
             受理step上限、非有限値、Poisson未収束などが生じた場合。
         FileExistsError: 適応出力先に既存CSVがあり、混在を防ぐ場合。

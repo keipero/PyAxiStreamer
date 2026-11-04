@@ -21,7 +21,7 @@ def main():
         "small_impulse": SimulationConfig(nr=12, nz=10, max_step=20, z0=70e-6,
             cathode_radius=30e-6, voltage_mode="impulse", impulse_time_scale=2.),
         "small_negative": SimulationConfig(nr=12, nz=10, max_step=20, z0=70e-6,
-            cathode_radius=30e-6, voltage=-4000., poisson_omega=1.),
+            cathode_radius=30e-6, voltage=-4000.),
         "standard_100": SimulationConfig(max_step=100),
     }
     with tempfile.TemporaryDirectory() as temporary:

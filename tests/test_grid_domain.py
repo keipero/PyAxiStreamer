@@ -9,10 +9,11 @@ from unittest.mock import patch
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
-from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation, poisson_calc
+from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
 from streamer_drift_diffusion.electrostatics import calculate_charge_density, calculate_potential
 from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.grid import initialize_grid
+from poisson_reference import dense_poisson
 from streamer_drift_diffusion.reactions import apply_reactions
 from streamer_drift_diffusion.timestepping import transport_limit, chemistry_limit, dielectric_limit, try_density_step
 from streamer_drift_diffusion.simulation_types import gap_length
@@ -53,21 +54,12 @@ class GridDomainTests(unittest.TestCase):
     def test_poisson_matches_dense_direct_solution_with_electrode(self):
         config = self.config(nr=5, nz=7, electrode_gap=3e-4, z0=2e-4)
         state = initialize_simulation(config)
-        shape, count = state.phi.shape, state.phi.size
-        matrix = np.eye(count)
-        for i, j in np.ndindex(shape):
-            row = i*config.nz+j
-            for coefficient, ni, nj in ((state.p2, i, j+1), (state.p3, i-1, j),
-                                        (state.p4, i+1, j), (state.p5, i, j-1)):
-                if 0 <= ni < config.nr and 0 <= nj < config.nz:
-                    matrix[row, ni*config.nz+nj] += state.p1[i, j]*coefficient[i, j]
-        source = np.random.default_rng(42).normal(size=shape)*1e8*state.gas_mask
-        expected = np.linalg.solve(matrix, (state.p1*source).ravel()).reshape(shape)
-        phi = np.zeros(shape)
-        poisson_calc(phi, source, state.p1, state.p2, state.p3, state.p4, state.p5,
-                     tolerance=1e-12, max_iterations=10000, verbose=False)
-        assert_allclose(phi, expected, rtol=1e-9, atol=1e-10)
-        assert_array_equal(phi[~state.gas_mask], 0.)
+        state.rho[:] = np.random.default_rng(42).normal(size=state.phi.shape)*1e8*state.gas_mask
+        matrix, rhs = dense_poisson(state, config.voltage, state.rho)
+        expected = np.linalg.solve(matrix, rhs).reshape(state.phi.shape)
+        calculate_potential(state, config, verbose=False)
+        assert_allclose(state.phi, expected, rtol=1e-11, atol=1e-10)
+
 
     def test_electrode_voltage_stays_fixed_with_space_charge_and_both_polarities(self):
         for voltage in (-1000., 1000.):
@@ -77,9 +69,7 @@ class GridDomainTests(unittest.TestCase):
             calculate_charge_density(state, config)
             calculate_potential(state, config, verbose=False)
             assert_array_equal(state.phi[~state.gas_mask], voltage)
-            assert_array_equal(state.pphi[~state.gas_mask], 0.)
-            self.assertGreaterEqual(state.unit_potential.min(), 0.)
-            self.assertLessEqual(state.unit_potential.max(), 1.+1e-10)
+            self.assertLessEqual(state.poisson.residual, config.poisson_tolerance)
 
     def test_transport_conserves_electrons_including_all_boundary_losses(self):
         config = self.config()

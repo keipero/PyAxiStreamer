@@ -1,5 +1,4 @@
 """FiPy輸送の幾何、独立した流束解、係数更新、数値例外と試行復元。"""
-from copy import deepcopy
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -140,7 +139,9 @@ class FiPyTransportTests(unittest.TestCase):
         state.ne[:] = np.random.default_rng(7).random(state.ne.shape)*state.gas_mask*1e15
         state.vex[:] = 500.
         state.vey[:] = -700.
-        reference = deepcopy(state)
+        reference = initialize_simulation(config)
+        reference.ne[:] = state.ne
+        reference.vex[:], reference.vey[:] = state.vex, state.vey
         operator = ElectronTransport(state, config.delta)
         original = state.ne.copy()
         calls = []

@@ -10,7 +10,6 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.26", "fipy>=4.0.3,<4.1", "scipy>=1.11"]
 
 [project.optional-dependencies]
-fast = ["numba>=0.61"]
 notebook = ["matplotlib>=3.8", "jupyterlab>=4", "ipykernel>=6"]
 
 [project.scripts]

@@ -1,9 +1,13 @@
 """計算設定と状態。配列添字は [半径 i, 軸方向 j]、単位は SI（電場は Td）。"""
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from .grid import CylindricalGrid
+
+if TYPE_CHECKING:
+    from .electrostatics import PoissonSolver
 
 # プロジェクトルートの絶対パス
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -36,9 +40,7 @@ class SimulationConfig:
     background_ionization: float = 1e13 # 毎更新の密度加算量。dt は掛けない。
     max_step: int = 5000 # 最大ステップ数
     write_every: int = 100 # データ書き出しの間隔（ステップ数）
-    poisson_tolerance: float = 1e-6 # ポアソン方程式の収束判定の許容誤差
-    poisson_omega: float = 1.5 # ポアソン方程式の SOR 法の緩和パラメータ
-    poisson_progress_every: int = 20000 # ポアソン方程式の進捗表示の間隔（ステップ数）
+    poisson_tolerance: float = 1e-10 # max|Aφ-b|/max|b| の許容値。旧SOR更新量とは異なる。
     adaptive_timestep: bool = False # Trueで適応刻み。固定モードは従来どおり。
     t_end: float | None = None # 適応モードの終了時刻 [s]。明示指定する。
     dt_max: float | None = None # 適応刻みの上限 [s]。Noneならdtを使用。
@@ -50,8 +52,6 @@ class SimulationConfig:
     max_step_retries: int = 12 # 密度更新の縮小・再試行回数の上限
     adaptive_max_steps: int = 1000000 # 適応モードの受理step数の上限
     output_interval: float | None = None # 出力の実時間間隔 [s]。Noneならwrite_every*dt。
-    poisson_max_iterations: int = 200000 # 初期ラプラス解・各stepのPoisson反復上限
-    num_threads: int = 2 # Numba並列計算のスレッド数。Numba無効時は逐次実行。
     electrode_gap: float = 1e-3 # 接地平面z=0から電極先端までの距離[m]。領域寸法とは独立。
     electron_diffusion: float = 0.0 # 検証用の一定電子拡散係数 [m^2/s]。0は拡散なし。
 
@@ -97,6 +97,7 @@ class SimulationState:
     電極面はセル境界による階段状近似。gas_mask=Falseのセルを電極とする。
     2次元配列の添字[i, j]は半径方向i・軸方向jに対応する。
     """
+    poisson: "PoissonSolver"
     grid: CylindricalGrid  # Poisson・電場・輸送・刻み評価が共有する格子と面情報
     r: np.ndarray  # 半径方向の各セルの下側境界 [m]。最外側境界は含まない
     z: np.ndarray  # 軸方向の各セルの下側境界 [m]。最上側境界は含まない
@@ -107,7 +108,7 @@ class SimulationState:
     volume: np.ndarray  # セル体積係数 [m^3]（共通係数2πを省略）
     sr: np.ndarray  # 半径方向の下側セル面の面積係数 [m^2]（2πを省略）
     sz: np.ndarray  # 軸方向の下側セル面の面積係数 [m^2]（2πを省略）
-    phi: np.ndarray  # 全電位 [V]（基礎電位lphiと空間電荷電位pphiの和）
+    phi: np.ndarray  # FiPyで直接求解した総電位 [V]
     ex: np.ndarray  # セル中心の半径方向換算電場E_r/N [Td]（名前のxはr方向）
     ey: np.ndarray  # セル中心の軸方向換算電場E_z/N [Td]（名前のyはz方向）
     abs_e: np.ndarray  # セル中心の換算電場の大きさ|E|/N [Td]。反応に使用
@@ -124,15 +125,7 @@ class SimulationState:
     k1: np.ndarray  # 電子衝突電離の反応係数 [m^3/s]（N₂・O₂に共通）
     k2: np.ndarray  # O₂への解離付着によってO⁻を生成する反応係数 [m^3/s]
     k3: np.ndarray  # O₂を第三体とする三体付着でO₂⁻を生成する反応係数 [m^6/s]
-    p1: np.ndarray  # Poisson電位更新式の全体に掛ける係数（対角係数の逆数）
-    p2: np.ndarray  # Poisson離散化係数：zが大きい側の隣接電位phi[i, j+1]に対応
-    p3: np.ndarray  # Poisson離散化係数：rが小さい側の隣接電位phi[i-1, j]に対応
-    p4: np.ndarray  # Poisson離散化係数：rが大きい側の隣接電位phi[i+1, j]に対応
-    p5: np.ndarray  # Poisson離散化係数：zが小さい側の隣接電位phi[i, j-1]に対応
-    lphi: np.ndarray  # unit_potential×印加電圧による離散ラプラス電位 [V]
-    pphi: np.ndarray  # 空間電荷による電位 [V]。前stepの解を次の反復の初期値に使う
     gas_mask: np.ndarray  # 気体セル=True、電極セル=Falseのbool配列
-    unit_potential: np.ndarray  # 同じ離散式で求めた印加電圧1 Vの基礎電位
     electron_losses: np.ndarray  # 累積流出電子数 [電極、接地平面、上端＋外周]（2πを含む）
     de: np.ndarray  # 気体セルの電子拡散係数 [m^2/s]。電極内は0。
     er_face: np.ndarray  # 全半径面の法線方向換算電場E_r/N [Td]

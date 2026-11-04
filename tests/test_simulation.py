@@ -8,7 +8,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import (
     SimulationConfig, SimulationState, initialize_simulation, run_simulation,
-    hyperbolic_curve, poisson_calc, ElectronTransport, load_voltage_waveform, applied_voltage, discretization,
+    hyperbolic_curve, ElectronTransport, load_voltage_waveform, applied_voltage,
 )
 from streamer_drift_diffusion.output import write_c_matrix
 from streamer_drift_diffusion.reactions import apply_reactions
@@ -31,43 +31,24 @@ class SimulationTests(unittest.TestCase):
         assert_array_equal(state.ne, state.n2p + state.o2p)
         matrices = [getattr(state, f.name) for f in fields(SimulationState)
                     if isinstance(getattr(state, f.name), np.ndarray) and getattr(state, f.name).ndim == 2]
-        self.assertEqual(len(matrices), 34)
+        self.assertEqual(len(matrices), 26)
         for i, left in enumerate(matrices):
             for right in matrices[i + 1:]:
                 self.assertFalse(np.shares_memory(left, right))
 
-    def test_poisson_single_sweep_and_axis_branch(self):
-        phi = np.zeros((2, 2))
-        rho = np.array([[1., 2.], [3., 4.]])
-        p1 = np.ones((2, 2))
-        p2, p3, p4, p5 = [np.full((2, 2), .1) for _ in range(4)]
-        p3[0] = np.nan
-        loops = poisson_calc(phi, rho, p1, p2, p3, p4, p5,
-                             omega=1., tolerance=np.inf, verbose=False)
-        self.assertEqual(loops, 1)
-        # 赤(0,0),(1,1)を先に更新し、その値で黒を更新する。
-        assert_allclose(phi, [[1., 1.5], [2.5, 4.]])
 
-    def test_poisson_known_parabola_both_signs_and_sor(self):
+
+    def test_poisson_known_parabola_both_signs(self):
         config = SimulationConfig(nr=12, nz=16, delta=1., electrode_gap=32., poisson_tolerance=1e-12)
         state = initialize_simulation(config)
         height = config.nz * config.delta
         for sign in (1., -1.):
-            # 半セルDirichletのFV離散解。連続放物線との差はO(delta^2)。
-            expected = np.broadcast_to(sign * (4 * state.zh * (height - state.zh)
-                                               + config.delta**2) / height**2, (12, 16))
-            boundary = discretization(state.rh, state.zh, state.p1, state.p2, state.p3,
-                                      state.p4, state.p5, radial_boundary=expected[0])
-            rho = np.full((12, 16), sign * 8 / height**2) + boundary
-            answers, iterations = [], []
-            for omega in (1., 1.5):
-                phi = np.zeros((12, 16))
-                iterations.append(poisson_calc(phi, rho, state.p1, state.p2, state.p3, state.p4,
-                    state.p5, omega=omega, tolerance=1e-12, verbose=False))
-                assert_allclose(phi, expected, rtol=1e-8, atol=1e-8)
-                answers.append(phi)
-            assert_allclose(*answers, rtol=1e-8, atol=1e-8)
-            self.assertLess(iterations[1], iterations[0])
+            expected = np.broadcast_to(sign*(4*state.zh*(height-state.zh)+config.delta**2)/height**2, (12, 16))
+            state.radial_boundary[:] = expected[0]
+            state.upper_boundary[:] = 0.
+            answer = state.poisson.solve(np.full((12, 16), sign*8/height**2), 1.)
+            assert_allclose(answer, expected, rtol=1e-12, atol=1e-12)
+
 
     def test_transport_top_boundary(self):
         config = self.small_config(nr=2, nz=2, delta=1., electrode_gap=100.)
@@ -123,7 +104,8 @@ class SimulationTests(unittest.TestCase):
             self.assertEqual(applied_voltage(config, 1e-9, waveform=table), 0.)
             self.assertAlmostEqual(applied_voltage(config, 1e-12, waveform=table), 500.)
             final = run_simulation(config, write_output=False, verbose=False)
-            assert_allclose(final.phi, 500. * final.unit_potential, rtol=1e-14)
+            direct = run_simulation(replace(config, voltage_mode='dc', voltage=500.), write_output=False, verbose=False)
+            assert_allclose(final.phi, direct.phi, rtol=1e-14)
             assert_array_equal(final.ne, np.zeros_like(final.ne))
 
     def test_constant_impulse_equals_dc(self):
@@ -151,9 +133,9 @@ class SimulationTests(unittest.TestCase):
                        {"voltage_mode": "unknown"}, {"delta": 0}, {"dt": -1}, {"poisson_tolerance": 0}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 initialize_simulation(self.small_config(**kwargs))
-        for omega in (0., -.5, 2., np.nan, np.inf):
+        for tolerance in (0., -.5, np.nan, np.inf):
             with self.assertRaises(ValueError):
-                initialize_simulation(self.small_config(poisson_omega=omega))
+                initialize_simulation(self.small_config(poisson_tolerance=tolerance))
         for scale in (0., -1., np.nan, np.inf):
             with self.assertRaises(ValueError):
                 initialize_simulation(self.small_config(voltage_mode="impulse", impulse_time_scale=scale))

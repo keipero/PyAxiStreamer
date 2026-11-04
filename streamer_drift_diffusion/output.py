@@ -9,7 +9,6 @@ import numpy as np
 import fipy
 import scipy
 
-from ._acceleration import NUMBA_AVAILABLE, get_num_threads
 
 
 def write_c_values(path, values):
@@ -133,7 +132,8 @@ class AdaptiveOutput:
         self.directory.mkdir(parents=True, exist_ok=True)
         (self.directory / "run_config.json").write_text(
             json.dumps({"config": asdict(self.config), "numpy_version": np.__version__,
-                        "numba_available": NUMBA_AVAILABLE, "num_threads_used": get_num_threads(),
+                        "poisson_backend": "fipy", "poisson_solver": type(self.state.poisson.solver).__name__,
+                        "poisson_criterion": "max_abs(A*phi-b) / max_abs(b)",
                         "transport_backend": "fipy", "transport_time_scheme": "explicit Euler",
                         "fipy_version": fipy.__version__, "scipy_version": scipy.__version__,
                         "fipy_solver_suite": fipy.solvers.solver_suite,
@@ -142,7 +142,7 @@ class AdaptiveOutput:
                         "field_layout": "cell-centered Ex/Ey/absE; complete face fields and velocities in state",
                         "field_unit": "Td",
                         "electron_diffusion_source": "constant verification coefficient; Py3bolos not coupled",
-                        "outer_potential": "analytic background, zero space-charge correction",
+                        "outer_potential": "analytic Dirichlet voltage at outer faces",
                         "output_index": "frame", "field_and_density_times": "time_s"}, indent=2), encoding="utf-8")
         try:
             self.times_stream = self.stack.enter_context(open(self.directory / "times.csv", "w", newline="", encoding="utf-8"))

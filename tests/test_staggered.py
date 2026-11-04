@@ -9,8 +9,9 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
-from streamer_drift_diffusion.electrostatics import calculate_electric_field, discretization
+from streamer_drift_diffusion.electrostatics import calculate_electric_field
 from streamer_drift_diffusion.transport import ElectronTransport
+from poisson_reference import dense_poisson
 from streamer_drift_diffusion.reactions import calculate_reaction_coefficients
 from streamer_drift_diffusion.simulation import prepare_step
 from streamer_drift_diffusion.simulation_types import molecular_density
@@ -114,15 +115,8 @@ class StaggeredTests(unittest.TestCase):
         flux_r, flux_z = state.er_face*ar, state.ez_face*az
         divergence = (flux_r[1:]-flux_r[:-1]+flux_z[:, 1:]-flux_z[:, :-1])
         divergence *= molecular_density(config)*1e-21/state.volume
-        source = discretization(state.rh, state.zh, state.p1, state.p2, state.p3,
-            state.p4, state.p5, gas_mask=state.gas_mask,
-            radial_boundary=state.radial_boundary, upper_boundary=state.upper_boundary)
-        expected = np.divide(state.phi, state.p1, out=np.zeros_like(state.phi), where=state.gas_mask)
-        expected[:, :-1] += state.p2[:, :-1]*state.phi[:, 1:]
-        expected[:, 1:] += state.p5[:, 1:]*state.phi[:, :-1]
-        expected[1:] += state.p3[1:]*state.phi[:-1]
-        expected[:-1] += state.p4[:-1]*state.phi[1:]
-        expected -= voltage*source
+        matrix, rhs = dense_poisson(state, voltage)
+        expected = (matrix@state.phi.ravel()-rhs).reshape(state.phi.shape)
         assert_allclose(divergence[state.gas_mask], expected[state.gas_mask], rtol=2e-13, atol=1e-11)
 
     def test_electrode_normal_absorption_and_zero_tangential_field(self):
