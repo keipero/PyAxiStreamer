@@ -39,7 +39,7 @@ def electron_mobility(field, config):
     return mobility * (3.74e24 / molecular_density(config))
 
 
-def _tangential_faces(values, gas, axis):
+def _tangential_faces(values, gas, axis, interior):
     """中心の接線成分を指定方向の面へ補間する。金属面では接線電場0。
 
     内部気体面は両中心の平均、軸は偶対称、接地面は0。
@@ -47,8 +47,9 @@ def _tangential_faces(values, gas, axis):
     法線成分はこの補間を使わず、電位と境界値から直接計算する。
     """
     values, gas = np.moveaxis(values, axis, 0), np.moveaxis(gas, axis, 0)
+    interior = np.moveaxis(interior, axis, 0)
     result = np.zeros((values.shape[0] + 1, *values.shape[1:]))
-    result[1:-1] = np.where(gas[:-1] & gas[1:], .5*(values[:-1]+values[1:]), 0.)
+    result[1:-1] = np.where(interior[1:-1], .5*(values[:-1]+values[1:]), 0.)
     if axis == 0:
         result[0] = values[0]  # r=0で軸方向成分は偶対称。
     result[-1] = np.where(gas[-2], 1.5*values[-1]-.5*values[-2], values[-1]) * gas[-1]
@@ -72,8 +73,9 @@ def calculate_transport_coefficients(state, config):
         軸の半径流速・移動度は0。電極内部は0、気体と接する吸収面は保持する。
         deは検証用の一定係数。将来のPy3bolos連成では、この格納箇所へ
         セルごとの物理係数を与える。現在は物理係数の自動計算を行わない。"""
-    radial = np.hypot(state.er_face, _tangential_faces(state.ey, state.gas_mask, 0))
-    axial = np.hypot(_tangential_faces(state.ex, state.gas_mask, 1), state.ez_face)
+    interior = state.grid.split_faces(state.grid.interior(state.gas_mask))
+    radial = np.hypot(state.er_face, _tangential_faces(state.ey, state.gas_mask, 0, interior[0]))
+    axial = np.hypot(_tangential_faces(state.ex, state.gas_mask, 1, interior[1]), state.ez_face)
     state.mobility_r[:] = electron_mobility(radial, config)
     state.mobility_z[:] = electron_mobility(axial, config)
     state.mobility_r[0] = 0.

@@ -30,7 +30,7 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(state.rh[0], config.delta * .5)
         assert_array_equal(state.ne, state.n2p + state.o2p)
         matrices = [getattr(state, f.name) for f in fields(SimulationState)
-                    if getattr(state, f.name).ndim == 2]
+                    if isinstance(getattr(state, f.name), np.ndarray) and getattr(state, f.name).ndim == 2]
         self.assertEqual(len(matrices), 34)
         for i, left in enumerate(matrices):
             for right in matrices[i + 1:]:

@@ -335,16 +335,18 @@ def calculate_electric_field(state, config, *, voltage=None):
         等間隔格子を対象とする。電場の単位は全てTd。"""
     voltage = config.voltage if voltage is None else voltage
     scale = molecular_density(config) * 1e-21
-    gas, phi, er, ez = state.gas_mask, state.phi, state.er_face, state.ez_face
-    er[:] = 0.
-    ez[:] = 0.
-    er[1:-1] = -(phi[1:] - phi[:-1]) / (config.delta * scale)
-    ez[:, 1:-1] = -(phi[:, 1:] - phi[:, :-1]) / (config.delta * scale)
-    er[1:-1] *= np.where(gas[1:] != gas[:-1], 2., gas[1:] | gas[:-1])
-    ez[:, 1:-1] *= np.where(gas[:, 1:] != gas[:, :-1], 2., gas[:, 1:] | gas[:, :-1])
-    er[-1] = -(voltage * state.radial_boundary - phi[-1]) / (config.delta/2 * scale) * gas[-1]
-    ez[:, 0] = -phi[:, 0] / (config.delta/2 * scale) * gas[:, 0]
-    ez[:, -1] = -(voltage * state.upper_boundary - phi[:, -1]) / (config.delta/2 * scale) * gas[:, -1]
+    grid, gas = state.grid, state.gas_mask
+    boundary = np.full(grid.mesh.numberOfFaces, voltage, dtype=float)
+    boundary[grid.face_ids[0][-1]] = voltage*state.radial_boundary
+    boundary[grid.face_ids[1][:, 0]] = 0.
+    boundary[grid.face_ids[1][:, -1]] = voltage*state.upper_boundary
+    low_gas, high_gas = grid.adjacent(gas)
+    low, high = grid.adjacent(state.phi)
+    low, high = np.where(low_gas, low, boundary), np.where(high_gas, high, boundary)
+    field = -(high-low)/(grid.distances(gas)*scale)
+    field *= (low_gas | high_gas) & (grid.area > 0.)
+    er, ez = state.er_face, state.ez_face
+    er[:], ez[:] = grid.split_faces(field)
     state.ex[:] = .5 * (er[:-1] + er[1:]) * gas
     state.ey[:] = .5 * (ez[:, :-1] + ez[:, 1:]) * gas
     np.hypot(state.ex, state.ey, out=state.abs_e)

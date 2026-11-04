@@ -13,7 +13,7 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
-from streamer_drift_diffusion.transport import diffusion_rates, ElectronTransport
+from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.grid import initialize_grid
 from streamer_drift_diffusion.timestepping import (
     TimestepError, diffusion_limit, transport_limit, timestep_limits, try_density_step,
@@ -62,18 +62,18 @@ class DiffusionTests(unittest.TestCase):
         grid = initialize_grid(SimulationConfig(nr=2, nz=2, delta=1., electrode_gap=10.))
         coefficient = np.array([[1., 9.], [1., 9.]])
         gas = np.ones((2, 2), dtype=bool)
-        radial, axial = diffusion_rates(coefficient, gas, 1., grid['sr'], grid['sz'])
+        radial, axial = grid['grid'].split_faces(grid['grid'].diffusion_rates(coefficient, gas))
         assert_array_equal(radial[0], 0.)
         assert_allclose(axial[:, 1]/grid['sz'][:, 0], 1.8)
         assert_allclose(axial[:, 0]/grid['sz'][:, 0], 2.)
         assert_allclose(axial[:, -1]/grid['sz'][:, 0], 18.)
         gas[:, 1] = False
-        _, axial = diffusion_rates(coefficient, gas, 1., grid['sr'], grid['sz'])
+        _, axial = grid['grid'].split_faces(grid['grid'].diffusion_rates(coefficient, gas))
         assert_allclose(axial[:, 1]/grid['sz'][:, 0], 2.)
         assert_array_equal(axial[:, -1], 0.)
         # D=0の気体層は、調和平均では拡散障壁となる。
         coefficient[:, 1] = 0.
-        _, axial = diffusion_rates(coefficient, np.ones_like(gas), 1., grid['sr'], grid['sz'])
+        _, axial = grid['grid'].split_faces(grid['grid'].diffusion_rates(coefficient, np.ones_like(gas)))
         assert_array_equal(axial[:, 1], 0.)
 
     def test_zero_coefficient_and_zero_velocity_keep_zero_state(self):

@@ -33,6 +33,8 @@ def main():
             worst_scaled_error = 0.
             for field in fields(SimulationState):
                 actual = getattr(state, field.name)
+                if not isinstance(actual, np.ndarray):
+                    continue
                 expected = np.loadtxt(root / "julia" / name / f"state_{field.name}.txt").reshape(actual.shape)
                 # 電荷中性の大数差では丸め誤差が増幅されるため配列尺度で正規化。
                 scale = max(float(np.max(np.abs(expected))), 1e-300)

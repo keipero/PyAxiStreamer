@@ -10,7 +10,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
 from streamer_drift_diffusion.electrostatics import calculate_electric_field, discretization
-from streamer_drift_diffusion.transport import face_areas, ElectronTransport, transport_rates
+from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.reactions import calculate_reaction_coefficients
 from streamer_drift_diffusion.simulation import prepare_step
 from streamer_drift_diffusion.simulation_types import molecular_density
@@ -110,7 +110,7 @@ class StaggeredTests(unittest.TestCase):
         voltage = -3.
         state.phi[~state.gas_mask] = voltage
         calculate_electric_field(state, config, voltage=voltage)
-        ar, az = face_areas(state.sr, state.sz)
+        ar, az = state.grid.areas
         flux_r, flux_z = state.er_face*ar, state.ez_face*az
         divergence = (flux_r[1:]-flux_r[:-1]+flux_z[:, 1:]-flux_z[:, :-1])
         divergence *= molecular_density(config)*1e-21/state.volume
@@ -159,7 +159,7 @@ class StaggeredTests(unittest.TestCase):
         state.vey[:, -1] = 3.
         initial = np.sum(state.ne*state.volume)*2*np.pi
         losses = ElectronTransport(state, config.delta).step(state, .01)
-        ar, az = face_areas(state.sr, state.sz)
+        ar, az = state.grid.areas
         expected = .01*(2*np.sum(ar[-1]) + 3*np.sum(az[:, -1]))*2*np.pi
         self.assertAlmostEqual(losses[2], expected)
         self.assertAlmostEqual(np.sum(state.ne*state.volume)*2*np.pi+losses.sum(), initial)
@@ -169,9 +169,9 @@ class StaggeredTests(unittest.TestCase):
         rng = np.random.default_rng(12)
         vr, vz = rng.normal(size=state.ne.shape), rng.normal(size=state.ne.shape)
         with self.assertRaisesRegex(ValueError, 'face shapes'):
-            transport_rates(vr, vz, state.sr, state.sz)
+            state.grid.pack_faces(vr, vz)
         with self.assertRaises(ValueError):
-            transport_rates(np.zeros((2, 2)), vz, state.sr, state.sz)
+            state.grid.pack_faces(np.zeros((2, 2)), vz)
 
     def test_dielectric_limit_uses_actual_face_mobility_and_neighbor_density(self):
         config = self.config()

@@ -5,6 +5,10 @@
 電子の移流拡散はFiPyの円筒有限体積法を使用します。Poisson求解はNumbaによるRB-SORです。
 [FiPy移行方針と検証結果](FIPY_MIGRATION_PLAN.md)に、境界条件・時間離散化・検証範囲を記載しています。
 
+格子と面情報は`state.grid`（`CylindricalGrid`）へ一元化しています。FiPyメッシュ、体積・面積、
+面の隣接セル、境界区分、半セル距離を、電場・電子輸送・CFL・誘電緩和評価で共有します。
+既存の`state.volume/sr/sz`などは共通格子の配列を参照し、Poissonの離散化とRB-SORは維持しています。
+
 ## 実行方法
 
 Python 3.10以上を使用します。以下は、この `pyaxistreamer-master` フォルダで実行してください。
@@ -254,7 +258,7 @@ pyaxistreamer-master/
 | [__main__.py](streamer_drift_diffusion/__main__.py) | `main()` | `--steps`、`--voltage-mode` などを解析して `SimulationConfig` を作り、`run_simulation()` を呼びます。`python -m streamer_drift_diffusion` と、パッケージインストール後の `streamer-python` も同じ入口です。 |
 | [__init__.py](streamer_drift_diffusion/__init__.py) | 公開APIの再公開 | `from streamer_drift_diffusion import ...` で設定・状態・実行関数などを読み込めるようにします。 |
 | [simulation_types.py](streamer_drift_diffusion/simulation_types.py) | `SimulationConfig`、`SimulationState`、`molecular_density()`、`gap_length()` | 格子・電圧・時間刻み・反応条件などの設定と、全状態配列を定義します。分子数密度とギャップ長の計算もここです。 |
-| [grid.py](streamer_drift_diffusion/grid.py) | `grid_axis()`、`initialize_grid()` | 格子座標、セル中心、セル幅、軸対称有限体積法の体積・面積係数を生成します。初期化と電子移流で使います。 |
+| [grid.py](streamer_drift_diffusion/grid.py) | `CylindricalGrid`、`initialize_grid()` | FiPyメッシュと幾何係数、面番号・隣接セル・境界区分・距離を管理します。`pack_faces()`・`split_faces()`で全面配列を変換し、拡散率とセル集計も共通化します。 |
 | [initial_conditions.py](streamer_drift_diffusion/initial_conditions.py) | `validate_config()`、`initialize_simulation()` | 設定検査後に格子と状態配列を確保し、Poisson係数と単位電位を準備します。気体内に中性粒子とGaussian状の電子・正イオンを設定し、電荷中性の初期状態を返します。 |
 
 ### 時間発展・物理計算・出力
@@ -266,7 +270,7 @@ pyaxistreamer-master/
 | [voltage_waveforms.py](streamer_drift_diffusion/voltage_waveforms.py) | `load_voltage_waveform()`、`normalized_voltage()`、`applied_voltage()` | 波形をSI単位に換算し、振幅規格化・線形補間・時間倍率を適用して、その時刻の印加電圧を返します。DCでは一定電圧を返します。 |
 | [electrostatics.py](streamer_drift_diffusion/electrostatics.py) | `discretization()`、`calculate_charge_density()`、`calculate_potential()`、`calculate_electric_field()` | 初期化時にPoisson係数 `p1`～`p5` を生成します。各stepでは密度から電荷源を作り、`initialize_potential()` で準備した離散単位電位を電圧倍した `lphi` と、`poisson_calc()` の並列RB-SOR解 `pphi` を足して `phi` を求めます。その差分から換算電場を計算します。 |
 | [transport_coefficients.py](streamer_drift_diffusion/transport_coefficients.py) | `electron_drift()`、`electron_mobility()`、`_tangential_faces()`、`calculate_transport_coefficients(state, config)` | 各面で電場強度・移動度・速度を評価し、中心の拡散係数 `de` も準備します。面速度は輸送、面移動度は誘電緩和へ渡します。 |
-| [transport.py](streamer_drift_diffusion/transport.py) | `ElectronTransport`、`transport_rates()`、`diffusion_rates()` | FiPyの円筒格子・陽的上流／拡散項で`ne`を更新します。半セル吸収の損失項から3区分の流出数を返します。面の率はCFL評価にも使います。 |
+| [transport.py](streamer_drift_diffusion/transport.py) | `ElectronTransport` | 共有メッシュを再利用し、FiPyの陽的上流／拡散項で`ne`を更新します。共有の面区分と距離で半セル吸収・3区分の流出数を計算します。 |
 | [reactions.py](streamer_drift_diffusion/reactions.py) | `calculate_reaction_coefficients()`、`apply_reactions()` | セル中心の電場強度から現行の速度式と反応係数式を評価して `k1`～`k3` を求めます。輸送後の密度へ反応と背景電離を適用し、電子・中性粒子・正負イオンを更新します。 |
 | [output.py](streamer_drift_diffusion/output.py) | `write_c_vector()`、`write_c_matrix()`、`write_step_output()`、`AdaptiveOutput`、`load_output_times()` | 座標と物理量をC／Julia互換CSVへ保存します。適応出力の設定・実時刻・刻み履歴・停止診断と、描画用の時刻読み込みも担当します。 |
 | [_acceleration.py](streamer_drift_diffusion/_acceleration.py) | `njit`、`prange`、`NUMBA_AVAILABLE` | Numbaが使える場合にPoisson反復と基礎電位計算をJITコンパイルします。Poissonでは行を並列処理します。未導入時、または環境変数 `STREAMER_DISABLE_NUMBA=1` の場合はPython関数と `range` で実行します。 |
@@ -299,9 +303,8 @@ simulation.py::run_simulation(config, ...)
 │  │  └─ voltage_waveforms.py::validate_impulse_parameters(config)
 │  │     └─ impulseモードの場合のみ、振幅・時間倍率を検査
 │  ├─ grid.py::initialize_grid(config)
-│  │  ├─ grid.py::grid_axis(config.nr, config.delta)  # 半径方向
-│  │  ├─ grid.py::grid_axis(config.nz, config.delta)  # 軸方向
-│  │  └─ 体積・面積係数を計算し、格子配列の辞書を返す
+│  │  ├─ grid.py::CylindricalGrid(config)  # メッシュ・全面情報を一度生成
+│  │  └─ 共有格子と、その幾何配列を含む辞書を返す
 │  ├─ SimulationStateのフィールドを調べ、残りの状態配列をゼロで確保
 │  ├─ simulation_types.py::SimulationState(**arrays)  # stateを生成
 │  ├─ electrostatics.py::initialize_potential(state, config)

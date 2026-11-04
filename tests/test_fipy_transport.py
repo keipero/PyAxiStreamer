@@ -23,6 +23,44 @@ def gas_state(nr=3, nz=4, spacing=1.):
 
 
 class FiPyTransportTests(unittest.TestCase):
+    def test_transport_reuses_shared_mesh_and_geometry_arrays(self):
+        state = gas_state(5, 7, .1)
+        with patch('streamer_drift_diffusion.grid.CylindricalGrid2D', side_effect=AssertionError('rebuilt mesh')):
+            operator = ElectronTransport(state, .1)
+        self.assertIs(operator.mesh, state.grid.mesh)
+        self.assertIs(state.volume, state.grid.volume)
+        self.assertTrue(np.shares_memory(state.sr, state.grid.areas[0]))
+        self.assertTrue(np.shares_memory(state.sz, state.grid.areas[1]))
+
+    def test_face_neighbors_have_coordinate_order_and_cover_each_face_once(self):
+        state = gas_state(3, 5)
+        grid = state.grid
+        radial, axial = grid.face_ids
+        assert_array_equal(np.sort(np.concatenate((radial.ravel(), axial.ravel()))),
+                           np.arange(grid.mesh.numberOfFaces))
+        for i, j in np.ndindex(radial.shape):
+            self.assertEqual(grid.low[radial[i, j]], (i-1)+3*j if i else -1)
+            self.assertEqual(grid.high[radial[i, j]], i+3*j if i < 3 else -1)
+        for i, j in np.ndindex(axial.shape):
+            self.assertEqual(grid.low[axial[i, j]], i+3*(j-1) if j else -1)
+            self.assertEqual(grid.high[axial[i, j]], i+3*j if j < 5 else -1)
+        values = np.arange(grid.mesh.numberOfFaces)
+        assert_array_equal(grid.pack_faces(*grid.split_faces(values)), values)
+
+    def test_shared_boundary_labels_and_distances_include_internal_electrode(self):
+        state = gas_state()
+        state.gas_mask[1, 2] = False
+        grid = state.grid
+        face = grid.face_ids[1][1, 2]
+        self.assertEqual(grid.boundary_kind[face], 0)
+        self.assertEqual(grid.distances(state.gas_mask)[face], .5)
+        self.assertEqual(grid.distances(state.gas_mask)[grid.face_ids[1][0, 2]], 1.)
+        assert_array_equal(grid.boundary_kind[grid.face_ids[1][:, 0]], 1)
+        assert_array_equal(grid.boundary_kind[grid.face_ids[1][:, -1]], 2)
+        assert_array_equal(grid.boundary_kind[grid.face_ids[0][-1]], 2)
+        assert_array_equal(grid.area[grid.face_ids[0][0]], 0.)
+        assert_array_equal(grid.sum_faces(np.ones(grid.mesh.numberOfFaces)), 4.)
+
     def test_cylindrical_cell_mapping_and_volume(self):
         state = gas_state(5, 7, .1)
         operator = ElectronTransport(state, .1)

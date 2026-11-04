@@ -187,7 +187,8 @@ class AdaptiveOutput:
         (self.directory / "failure.json").write_text(
             json.dumps({"step": step, "time_s": time, "error": str(exc)}, indent=2), encoding="utf-8")
         np.savez_compressed(self.directory / "failure_state.npz",
-                            **{field.name: getattr(self.state, field.name) for field in fields(self.state)})
+                            **{field.name: getattr(self.state, field.name) for field in fields(self.state)
+                               if isinstance(getattr(self.state, field.name), np.ndarray)})
 
     def __exit__(self, *exc):
         self.stack.close()

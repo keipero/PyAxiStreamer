@@ -168,7 +168,8 @@ class RedBlackTests(unittest.TestCase):
         self.assertEqual(answers[0][1], answers[1][1])
         for left, right in zip(answers[0][2], answers[1][2]):
             for field in fields(left):
-                assert_array_equal(getattr(left, field.name), getattr(right, field.name))
+                if isinstance(getattr(left, field.name), np.ndarray):
+                    assert_array_equal(getattr(left, field.name), getattr(right, field.name))
 
 
 if __name__ == '__main__':

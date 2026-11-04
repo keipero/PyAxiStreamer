@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from .grid import CylindricalGrid
 
 # プロジェクトルートの絶対パス
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -96,6 +97,7 @@ class SimulationState:
     電極面はセル境界による階段状近似。gas_mask=Falseのセルを電極とする。
     2次元配列の添字[i, j]は半径方向i・軸方向jに対応する。
     """
+    grid: CylindricalGrid  # Poisson・電場・輸送・刻み評価が共有する格子と面情報
     r: np.ndarray  # 半径方向の各セルの下側境界 [m]。最外側境界は含まない
     z: np.ndarray  # 軸方向の各セルの下側境界 [m]。最上側境界は含まない
     rh: np.ndarray  # 半径方向のセル中心座標 [m]

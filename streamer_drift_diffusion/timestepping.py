@@ -66,12 +66,10 @@ def validate_densities(state):
 
 def diffusion_loss(state, config):
     """拡散更新のセルごとの損失対角係数 [m^3/s]。拡散なしでは0を返す。"""
-    from .transport import diffusion_rates
     coefficient = getattr(state, 'de', None)
     if coefficient is None or not np.any(coefficient):
         return 0.
-    radial, axial = diffusion_rates(coefficient, state.gas_mask, config.delta, state.sr, state.sz)
-    return radial[:-1]+radial[1:]+axial[:, :-1]+axial[:, 1:]
+    return state.grid.sum_faces(state.grid.diffusion_rates(coefficient, state.gas_mask))
 
 
 def diffusion_limit(state, config):
@@ -87,10 +85,9 @@ def transport_limit(state, config):
     別々の上限の最小値だけでは同時更新の非負性を保証できないため、
     実際の全セル面の流出係数を合算する。拡散0では従来の移流CFLになる。
     """
-    from .transport import transport_rates
-    radial, axial = transport_rates(state.vex, state.vey, state.sr, state.sz)
-    loss = (np.maximum(-radial[:-1], 0.) + np.maximum(radial[1:], 0.)
-            + np.maximum(-axial[:, :-1], 0.) + np.maximum(axial[:, 1:], 0.))
+    grid = state.grid
+    rate = grid.pack_faces(state.vex, state.vey)*grid.area
+    loss = grid.sum_faces(np.maximum(rate, 0.), np.maximum(-rate, 0.))
     loss += diffusion_loss(state, config)
     gas = getattr(state, 'gas_mask', np.ones_like(state.volume, dtype=bool))
     maximum = float(np.max((loss / state.volume)[gas]))
@@ -110,11 +107,10 @@ def dielectric_limit(state, config):
     if maximum_mobility == 0.:
         return math.inf
     electrons = np.where(state.gas_mask, state.ne, 0.)
-    density_r = np.maximum(np.pad(electrons, ((1, 0), (0, 0))), np.pad(electrons, ((0, 1), (0, 0))))
-    density_z = np.maximum(np.pad(electrons, ((0, 0), (1, 0))), np.pad(electrons, ((0, 0), (0, 1))))
-    density_r[0] = 0.  # 軸の面積は0で、輸送もない。
-    maximum = max(float(np.max(np.where(mu > 0., mu, maximum_mobility) * density))
-                  for mu, density in ((state.mobility_r, density_r), (state.mobility_z, density_z)))
+    density = np.maximum(*state.grid.adjacent(electrons))
+    density[state.grid.area == 0.] = 0.
+    mobility = state.grid.pack_faces(state.mobility_r, state.mobility_z)
+    maximum = float(np.max(np.where(mobility > 0., mobility, maximum_mobility) * density))
     maximum *= config.elementary_charge / config.vacuum_permittivity
     return 1. / maximum if maximum > 0 else math.inf
 
