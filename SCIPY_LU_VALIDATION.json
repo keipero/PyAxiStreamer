@@ -1,0 +1,36 @@
+{
+  "date": "2026-11-05",
+  "baseline_commit": "d6c5b6ab40031a5023787fe44394e25a833b5c0f",
+  "backend": "scipy",
+  "environments": [
+    {
+      "python": "3.14.3",
+      "environment": "env_pyaxistreamer",
+      "tests": 114,
+      "doctests": 329
+    },
+    {
+      "python": "3.14.10",
+      "environment": "env_pyaxistreamer_petsc (SciPy selected)",
+      "tests": 114,
+      "doctests": 329
+    }
+  ],
+  "old_venv_mpi4py_removed": "4.1.2",
+  "pip_check": "passed",
+  "cli_smoke": "12x16, 3 ps, no output: passed",
+  "code": {
+    "before": {
+      "implementation_lines": 875,
+      "definitions": 67,
+      "docstrings": 67,
+      "examples": 66
+    },
+    "after": {
+      "implementation_lines": 894,
+      "definitions": 68,
+      "docstrings": 68,
+      "examples": 67
+    }
+  }
+}

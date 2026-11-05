@@ -147,6 +147,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
     適応刻みだけが失敗した更新を復元・半減・再試行する。
     無出力でも同じイベントで刻みを分割するため、保存の有無で積分経路は変わらない。
     背景加算量はbackground_ionization * actual_dt / config.dt。
+    成功・失敗とも終了時にPoissonのLU分解を解放する。返した状態の電位・行列は保持する。
 
     Examples
     --------
@@ -233,4 +234,6 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
             if output:
                 output.save_failure(step, time, exc)
             raise TimestepError(f"simulation stopped at t={time:.9e}, step={step}: {exc}") from exc
+        finally:
+            state.poisson.close()
     return state

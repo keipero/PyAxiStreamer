@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from fipy import CellVariable
 import numpy as np
@@ -144,13 +145,13 @@ class StateStorageTests(unittest.TestCase):
         view = state.phi
         original = view.copy()
 
-        def fail(**kwargs):
+        def fail(rhs):
             """電位の正本を破壊して求解例外を模擬する。
 
             Parameters
             ----------
-            **kwargs : object
-                FiPy方程式のsolve()引数。検査には使わない。
+            rhs : ndarray
+                SuperLU求解への右辺。検査には使わない。
 
             Raises
             ------
@@ -160,9 +161,9 @@ class StateStorageTests(unittest.TestCase):
             state.phi_var.setValue(np.nan)
             raise RuntimeError('Poisson failure')
 
-        with patch.object(state.poisson.equation, 'solve', side_effect=fail):
-            with self.assertRaisesRegex(RuntimeError, 'Poisson failure'):
-                calculate_potential(state, config)
+        state.poisson._lu = SimpleNamespace(solve=fail)
+        with self.assertRaisesRegex(RuntimeError, 'Poisson failure'):
+            calculate_potential(state, config)
         assert_array_equal(view, original)
         calculate_potential(state, config)
         assert_allclose(view, original, rtol=1e-14)

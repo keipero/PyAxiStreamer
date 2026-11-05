@@ -2,7 +2,8 @@
 import math
 import numpy as np
 from fipy import CellVariable, FaceVariable, DiffusionTerm, ImplicitSourceTerm
-from fipy.solvers import LinearLUSolver
+from fipy.solvers.scipy import LinearLUSolver
+from scipy.sparse.linalg import splu
 
 from .simulation_types import molecular_density
 from .voltage_waveforms import applied_voltage
@@ -73,7 +74,7 @@ class PoissonSolver:
     equation : fipy.terms.term.Term
         FiPyで組み立てる総電位の方程式。
     solver : fipy.solvers.LinearLUSolver
-        選択されたFiPyバックエンドのLUソルバー。
+        初回のSciPy行列組立に用いるFiPyソルバー。求解は保持したSuperLU分解で行う。
     tolerance, residual : float
         許容値と直近のmax(abs(A*phi-b))/max(abs(b))。
 
@@ -82,7 +83,9 @@ class PoissonSolver:
     方程式は -laplacian(phi)=rho。rhoは電荷密度/epsilon0 [V/m²]。
     気体間だけをDiffusionTermで結合し、境界は共有の面積・半セル距離から対角項と源を作る。
     金属セルは気体から切り離した独立固定式で、大きな罰則係数を使わない。
-    メッシュと方程式オブジェクトは再利用するが、通常のFiPy solve()により組立・LU分解は毎回行う。
+    初回だけFiPyで行列を組み、SciPy SuperLUの分解を保持する。以後は右辺だけを更新する。
+    close()はLU分解を解放する。行列は保持し、次のsolve()で再分解できる。
+    格子・電極形状・左辺係数は固定し、変更時には新しいPoissonSolverを作る。
     設定・気体マスクの検査はinitialize_simulation()が担当する。内部電極形状は求解中に変えない。
 
     Examples
@@ -140,6 +143,8 @@ class PoissonSolver:
         self.equation.cacheRHSvector()
         self.tolerance = config.poisson_tolerance
         self.solver = LinearLUSolver(tolerance=self.tolerance, criterion='RHS')
+        self._matrix = None
+        self._lu = None
         self.residual = 0.
 
     @property
@@ -187,13 +192,15 @@ class PoissonSolver:
         Raises
         ------
         RuntimeError
-            非有限入力、非有限解、または相対残差が許容値を超える場合。
+            非有限入力・右辺・解、分解・求解の失敗、または相対残差が許容値を超える場合。
 
         Notes
         -----
-        LUには初期推定が不要なため初期値を0にする。境界右辺に比べて小さい電荷変化も省略しない。
+        初回はFiPyのjustResidualVector()で組立だけを行い、二重にLU分解しない。
+        FiPy 4.0系のSciPy行列表現を使い、以後は保持した行列とSuperLUで直接解く。
+        LUには初期推定が不要で、境界右辺に比べて小さい電荷変化も省略しない。
         残差の右辺が0の場合、分母下限にはnp.finfo(float).tinyを使う。
-        potentialはstate.phi_varと同じ正本。残差異常・求解例外では求解前の電位へ復元する。
+        potentialはstate.phi_varと同じ正本。残差異常・求解例外では求解前の電位へ復元し、LUを解放する。
         退避コピーはこの呼出し中だけ保持し、解を別の状態配列へコピーしない。
 
         Examples
@@ -211,23 +218,55 @@ class PoissonSolver:
         """
         if not np.isfinite(voltage) or not np.all(np.isfinite(rho)):
             raise RuntimeError("nonfinite Poisson source or voltage")
-        self.source.setValue((np.where(self.gas, rho, 0.) + voltage*self.boundary_source).ravel(order='F'))
         previous = self.potential.value.copy()
         try:
-            # LUはゼロ初期値から解き、微小な電荷変化も省略しない。
-            self.potential.setValue(0.)
-            self.equation.solve(var=self.potential, solver=self.solver)
-            values = self.potential.value
+            self.source.setValue((np.where(self.gas, rho, 0.) + voltage*self.boundary_source).ravel(order='F'))
+            right_hand_side = self.source.value*self.grid.volume.ravel(order='F')
+            if not np.all(np.isfinite(right_hand_side)):
+                raise RuntimeError('nonfinite Poisson right-hand side')
+            if self._matrix is None:
+                self.potential.setValue(0.)
+                self.equation.justResidualVector(var=self.potential, solver=self.solver)
+                self._matrix = self.equation.matrix.matrix
+            if self._lu is None:
+                self._lu = splu(self._matrix.tocsc())
             rhs = self.equation.RHSvector
-            residual = self.equation.matrix*values-rhs
+            rhs[:] = right_hand_side
+            values = self._lu.solve(rhs)
+            residual = self._matrix@values-rhs
             self.residual = float(np.max(np.abs(residual))/max(float(np.max(np.abs(rhs))), np.finfo(float).tiny))
             if not np.all(np.isfinite(values)) or not np.isfinite(self.residual) or self.residual > self.tolerance:
                 raise RuntimeError(f"Poisson solve failed residual check: {self.residual:.6e}")
+            self.potential.setValue(values)
             self.potential.setValue(voltage, where=~self.gas.ravel(order='F'))
         except Exception:
             self.potential.setValue(previous)
+            self.close()
             raise
         return self.potential.value.reshape(self.grid.shape, order='F')
+
+    def close(self):
+        """保持したLU分解を解放し、次の求解での再作成を許可する。
+
+        Returns
+        -------
+        None
+            電位・FiPy行列を保持し、SciPy SuperLUへの参照だけを解除する。
+
+        Notes
+        -----
+        複数回呼んでもよい。通常の時間ループは成功・失敗とも終了時に呼ぶ。
+        単独利用では必要な求解が終わってから呼ぶ。未解放の分解もオブジェクトの破棄時に回収される。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
+        >>> state = initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.))
+        >>> state.poisson.close()
+        >>> _ = state.poisson.solve(state.rho, 0.)
+        >>> state.poisson.close()
+        """
+        self._lu = None
 
 
 def calculate_potential(state, config, *, verbose=True, time=0.0, waveform=None):
