@@ -1,9 +1,10 @@
 # ストリーマ放電シミュレーション
 
 軸対称r-z有限体積モデルです。Poisson方程式と電子移流拡散をFiPyで解き、反応・物理係数はNumPyで評価します。
-現在のバックエンドはSciPy、PoissonはLU求解です。Numbaは不要です。
+現在のバックエンドはSciPy、PoissonはLU分解を再利用する直接求解です。Numbaは不要です。
 電子密度・電位はFiPy変数を正本とし、NumPy計算には2次元ビューを渡します。
-PETSc導入前までの状態管理整理を完了しています。[状態管理の仕様・検証](FIPY_STATE_UNIFICATION.md)を参照してください。
+電子密度・電位の[状態管理の仕様・検証](FIPY_STATE_UNIFICATION.md)と、
+[SciPy LU再利用の仕様・検証](SCIPY_LU_REUSE.md)を参照してください。
 
 ## 実行
 
@@ -58,10 +59,15 @@ FiPyの`DiffusionTerm`を気体間だけに適用し、電極・接地・外端�
 金属セルは気体との結合を切った独立固定式です。大きな罰則係数は使いません。
 外周・上端は双曲線電極の解析式に現在の印加電圧を掛けた電位、接地面は0 V、電極は印加電圧です。
 
-`PoissonSolver`とFiPy方程式は初期化時に一度作ります。現在は`LinearLUSolver`を使用し、毎回行列を組み立て・分解します。
-LUには初期推定が不要なため、初期値を0にして解き、微小な電荷変化を相対初期残差で省略しないようにしています。
+`PoissonSolver`とFiPy方程式は初期化時に一度作ります。
+初回の求解時にFiPyで行列を一度だけ組み、SciPyの`splu()`によるSuperLU分解を保持します。
+以後は電荷と印加電圧から右辺だけを更新します。初回にFiPyで別のLU求解を行う二重分解はありません。
+格子・電極形状・左辺係数は固定します。これらを変更する場合は新しい`PoissonSolver`を作ってください。
+LUには初期推定が不要で、微小な電荷変化を相対初期残差で省略しません。
 入力・解の有限性と`max(abs(A*phi-b))/max(abs(b))`を検査し、失敗時は正本の電位を求解前へ復元して例外で停止します。
 ゼロ右辺の分母には浮動小数点のtinyを使います。
+通常の時間ループは成功・失敗とも終了時にLU分解を解放します。単独利用では`state.poisson.close()`を呼べます。
+解放後も電位・行列を保持し、次の求解ではLU分解だけを再作成できます。
 
 ```powershell
 python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-output
@@ -70,7 +76,7 @@ python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-outp
 `poisson_tolerance`の既定値は1e-10です。旧SORの電位更新量の許容値とは意味が異なります。
 `poisson_omega`・`poisson_progress_every`・`poisson_max_iterations`・`num_threads`と、CLIの`--poisson-omega`・`--num-threads`は廃止しました。
 `p1`～`p5`・`unit_potential`・`lphi`・`pphi`、旧Poisson関数、Numba専用処理も削除しました。
-PETScは未導入です。Windows用PETSc本体とpetsc4pyの導入・検証は後続作業です。
+この構成にPETSc・petsc4py・mpi4pyは不要です。
 
 ### 電子輸送と反応
 
@@ -141,7 +147,7 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `phi*.csv` | 総電位[V] |
 | `times.csv` | 両モードの出力番号・step・実時刻 |
 | `timestep_history.csv` | 両モードの刻み・制約・流出収支 |
-| `run_config.json` | 両モードの設定・ライブラリ版・FiPy求解方式 |
+| `run_config.json` | 両モードの設定・ライブラリ版・FiPy組立/SciPy SuperLU・行列と分解の再利用 |
 | `failure.json`・`failure_state.npz` | 両モードの停止診断。NPZは数値配列のみ |
 
 保存済み結果は`notebooks/`の描画Notebook、`notebooks/animate_abs_ez.py`で参照できます。
@@ -170,8 +176,9 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 引数・戻り値・例外に加え、物理量の単位、配列形状、状態を更新する範囲を説明し、
 可能な限り小格子や一時フォルダで実行できる`Examples`を添えます。
 docstringはコード削減の対象にせず、削減量は説明を除く実装行数で評価します。
-状態管理整理後の全67定義にdocstring、66定義に`Examples`があり、
-全モジュールのdoctest計324項目を確認しました。廃止した関数の物理条件は共通処理の説明へ引き継いでいます。
+SciPy LU再利用後もNumPy形式のdocstringと`Examples`を維持しています。
+全モジュールのdoctest計329項目と回帰テスト114件が成功しました。
+廃止した関数の物理条件は共通処理の説明へ引き継いでいます。
 
 例えば時間ループの`Examples`は次のコマンドで実行できます。
 

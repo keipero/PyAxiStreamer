@@ -312,7 +312,9 @@ class SimulationOutput:
         self.directory.mkdir(parents=True, exist_ok=True)
         (self.directory / "run_config.json").write_text(
             json.dumps({"config": asdict(self.config), "numpy_version": np.__version__,
-                        "poisson_backend": "fipy", "poisson_solver": type(self.state.poisson.solver).__name__,
+                        "poisson_backend": "fipy", "poisson_solver": "SuperLU",
+                        "poisson_solver_suite": "scipy", "poisson_matrix_reused": True,
+                        "poisson_factorization_reused": True,
                         "poisson_criterion": "max_abs(A*phi-b) / max_abs(b)",
                         "transport_backend": "fipy", "transport_time_scheme": "explicit Euler",
                         "fipy_version": fipy.__version__, "scipy_version": scipy.__version__,

@@ -1,0 +1,88 @@
+{
+  "before": {
+    "python": "3.14.10 | packaged by conda-forge | (main, Oct 26 2026, 11:40:34) [MSC v.1944 64 bit (AMD64)]",
+    "numpy": "2.5.4",
+    "scipy": "1.18.1",
+    "fipy": "4.0.3",
+    "fipy_solver_suite": "scipy",
+    "module_path": "C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\.lu_validation\\baseline\\streamer_drift_diffusion\\__init__.py",
+    "shape": [
+      200,
+      150
+    ],
+    "delta": 1e-05,
+    "steps": 20,
+    "repeats": 3,
+    "threads": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1"
+    },
+    "measurements": {
+      "poisson_first_s": 0.23515670001506805,
+      "poisson_updates": 20,
+      "poisson_samples_s": [
+        3.1070387000218034,
+        2.9583225999958813,
+        2.943625100015197
+      ],
+      "poisson_median_s": 2.9583225999958813,
+      "poisson_warmup_s": 3.100105399993481,
+      "poisson_max_residual": 1.4317002766843962e-15,
+      "coupled_samples_s": [
+        6.802723100001458,
+        6.6662225000036415,
+        6.622116399987135
+      ],
+      "coupled_median_s": 6.6662225000036415,
+      "coupled_warmup_s": 6.61037129999022
+    }
+  },
+  "after": {
+    "python": "3.14.10 | packaged by conda-forge | (main, Oct 26 2026, 11:40:34) [MSC v.1944 64 bit (AMD64)]",
+    "numpy": "2.5.4",
+    "scipy": "1.18.1",
+    "fipy": "4.0.3",
+    "fipy_solver_suite": "scipy",
+    "module_path": "C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\pyaxistreamer-master\\streamer_drift_diffusion\\__init__.py",
+    "shape": [
+      200,
+      150
+    ],
+    "delta": 1e-05,
+    "steps": 20,
+    "repeats": 3,
+    "threads": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1"
+    },
+    "measurements": {
+      "poisson_first_s": 0.20534369998495094,
+      "poisson_updates": 20,
+      "poisson_samples_s": [
+        0.14527199999429286,
+        0.1424408000020776,
+        0.1380871000001207
+      ],
+      "poisson_median_s": 0.1424408000020776,
+      "poisson_warmup_s": 0.12498669998603873,
+      "poisson_max_residual": 1.603244580877643e-15,
+      "coupled_samples_s": [
+        3.4105352999758907,
+        3.619916399999056,
+        3.4466025000147056
+      ],
+      "coupled_median_s": 3.4466025000147056,
+      "coupled_warmup_s": 3.7576028000039514
+    }
+  },
+  "speedups": {
+    "poisson_first_s": 1.1451858519755027,
+    "poisson_median_s": 20.76878675177851,
+    "coupled_median_s": 1.934143116293567
+  },
+  "methodology": "Same Conda Python/SciPy environment; before then after; one warmup and three samples per mode; no I/O. Baseline is pre-change source snapshot.",
+  "date": "2026-11-05",
+  "baseline_commit": "d6c5b6ab40031a5023787fe44394e25a833b5c0f"
+}
