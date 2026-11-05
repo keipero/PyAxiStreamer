@@ -1,0 +1,201 @@
+{
+  "environment": {
+    "python": "3.14.10 | packaged by conda-forge | (main, Oct 26 2026, 11:40:34) [MSC v.1944 64 bit (AMD64)]",
+    "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+    "numpy": "2.5.4",
+    "scipy": "1.18.1",
+    "fipy": "4.0.3",
+    "petsc": [
+      3,
+      25,
+      6
+    ],
+    "mpi": "Intel(R) MPI Library 2021.17 for Windows* OS",
+    "threads": 1
+  },
+  "config": {
+    "nr": 200,
+    "nz": 150,
+    "delta": 1e-05,
+    "temperature": 300.0,
+    "avogadro": 6.022141e+23,
+    "gas_constant": 0.08205736608096,
+    "elementary_charge": 1.602176462e-19,
+    "vacuum_permittivity": 8.85e-12,
+    "oxygen_fraction": 0.2,
+    "nitrogen_fraction": 0.8,
+    "cathode_radius": 0.0003,
+    "voltage": 4000.0,
+    "voltage_mode": "dc",
+    "impulse_peak_voltage": 5000.0,
+    "impulse_time_scale": 1.0,
+    "voltage_waveform_file": "C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\pyaxistreamer-master\\streamer_drift_diffusion\\data\\impulse_waveform_V50_tr5_tw6.txt",
+    "dt": 1e-12,
+    "nmax": 1e+19,
+    "z0": 0.0009,
+    "sr0": 0.0001,
+    "sz0": 0.0001,
+    "background_ionization": 10000000000000.0,
+    "poisson_tolerance": 1e-10,
+    "adaptive_timestep": false,
+    "t_end": 2e-11,
+    "dt_max": null,
+    "dt_min": 1e-18,
+    "dt_safety_factor": 0.5,
+    "dt_cfl_number": 0.8,
+    "dt_chemistry_fraction": 0.1,
+    "dt_growth_factor": 1.2,
+    "max_step_retries": 12,
+    "max_steps": 1000000,
+    "output_interval": 1e-10,
+    "electrode_gap": 0.001,
+    "electron_diffusion": 0.0
+  },
+  "repeats": 3,
+  "poisson": [
+    {
+      "method": "lu",
+      "samples_s": [
+        0.17426139998133294,
+        0.18549699999857694,
+        0.23457599998801015
+      ],
+      "median_s": 0.18549699999857694,
+      "max_residual": 4.572422825954404e-15,
+      "lu_scale_error": 0.0,
+      "solver_relative_tolerance": 1e-10,
+      "symmetric": true,
+      "convergence": "{'solver': 'LinearLUSolver(tolerance=1e-10, iterations=10)', 'iterations': 2, 'criterion': 'RHS', 'residual': 6.565467108960863e-13, 'actual_code': 4, 'ksp_solver': 'preonly', 'ksp_precon': 'lu', 'status_code': 4, 'status_name': 'KSP_CONVERGED_ITS', 'suite': 'petsc'}"
+    },
+    {
+      "method": "gmres_ilu",
+      "samples_s": [
+        0.835287399997469,
+        0.962101499986602,
+        0.7541798999882303
+      ],
+      "median_s": 0.835287399997469,
+      "max_residual": 9.641617324448293e-15,
+      "lu_scale_error": 1.3668916926664891e-12,
+      "solver_relative_tolerance": 5.773502691896259e-14,
+      "symmetric": true,
+      "convergence": "{'solver': 'LinearGMRESSolver(tolerance=5.7735e-14, iterations=4000)', 'iterations': 567, 'criterion': 'RHS', 'residual': 6.26738223577861e-12, 'actual_code': 2, 'tolerance_scale': 1.0, 'ksp_solver': 'gmres', 'ksp_precon': 'ilu', 'ksp_norm_type': 2, 'status_code': 2, 'status_name': 'KSP_CONVERGED_RTOL', 'suite': 'petsc'}"
+    },
+    {
+      "method": "cg_jacobi",
+      "samples_s": [
+        0.2329454000282567,
+        0.34742930001812056,
+        0.3457154000061564
+      ],
+      "median_s": 0.3457154000061564,
+      "max_residual": 1.9019246868050408e-14,
+      "lu_scale_error": 3.995848911743343e-14,
+      "solver_relative_tolerance": 5.773502691896259e-14,
+      "symmetric": true,
+      "convergence": "{'solver': 'LinearCGSolver(tolerance=5.7735e-14, iterations=4000)', 'iterations': 825, 'criterion': 'RHS', 'residual': 6.350922443813418e-12, 'actual_code': 2, 'tolerance_scale': 1.0, 'ksp_solver': 'cg', 'ksp_precon': 'jacobi', 'ksp_norm_type': 2, 'status_code': 2, 'status_name': 'KSP_CONVERGED_RTOL', 'suite': 'petsc'}"
+    },
+    {
+      "method": "cg_icc",
+      "samples_s": [
+        0.2779953999852296,
+        0.2862141999939922,
+        0.25984849999076687
+      ],
+      "median_s": 0.2779953999852296,
+      "max_residual": 2.2208555075508563e-14,
+      "lu_scale_error": 3.0951148806175246e-14,
+      "solver_relative_tolerance": 5.773502691896259e-14,
+      "symmetric": true,
+      "convergence": "{'solver': 'LinearCGSolver(tolerance=5.7735e-14, iterations=4000)', 'iterations': 247, 'criterion': 'RHS', 'residual': 6.056005926180169e-12, 'actual_code': 2, 'tolerance_scale': 1.0, 'ksp_solver': 'cg', 'ksp_precon': 'icc', 'ksp_norm_type': 2, 'status_code': 2, 'status_name': 'KSP_CONVERGED_RTOL', 'suite': 'petsc'}"
+    },
+    {
+      "method": "cg_gamg",
+      "samples_s": [
+        0.24153540001134388,
+        0.15667559998109937,
+        0.2142399000003934
+      ],
+      "median_s": 0.2142399000003934,
+      "max_residual": 1.599971172106531e-14,
+      "lu_scale_error": 1.0378828342190501e-14,
+      "solver_relative_tolerance": 5.773502691896259e-14,
+      "symmetric": true,
+      "convergence": "{'solver': 'LinearCGSolver(tolerance=5.7735e-14, iterations=4000)', 'iterations': 17, 'criterion': 'RHS', 'residual': 4.192304675596655e-12, 'actual_code': 2, 'tolerance_scale': 1.0, 'ksp_solver': 'cg', 'ksp_precon': 'gamg', 'ksp_norm_type': 2, 'status_code': 2, 'status_name': 'KSP_CONVERGED_RTOL', 'suite': 'petsc'}"
+    },
+    {
+      "method": "gmres_gamg",
+      "samples_s": [
+        0.24133320001419634,
+        0.17803249999997206,
+        0.1893133000121452
+      ],
+      "median_s": 0.1893133000121452,
+      "max_residual": 1.0029670034100641e-14,
+      "lu_scale_error": 1.323300613629289e-14,
+      "solver_relative_tolerance": 5.773502691896259e-14,
+      "symmetric": true,
+      "convergence": "{'solver': 'LinearGMRESSolver(tolerance=5.7735e-14, iterations=4000)', 'iterations': 17, 'criterion': 'RHS', 'residual': 3.377453171822793e-12, 'actual_code': 2, 'tolerance_scale': 1.0, 'ksp_solver': 'gmres', 'ksp_precon': 'gamg', 'ksp_norm_type': 2, 'status_code': 2, 'status_name': 'KSP_CONVERGED_RTOL', 'suite': 'petsc'}"
+    }
+  ],
+  "coupled": [
+    {
+      "write_output": false,
+      "samples_s": {
+        "rebuild": [
+          7.115468999982113,
+          6.832127400004538,
+          6.775482299999567
+        ],
+        "reuse": [
+          5.382522900006734,
+          5.542200600000797,
+          5.005940999981249
+        ]
+      },
+      "median_s": {
+        "rebuild": 6.832127400004538,
+        "reuse": 5.382522900006734
+      },
+      "max_scale_errors": {
+        "ne": 0.0,
+        "phi": 0.0,
+        "ex": 0.0,
+        "ey": 0.0,
+        "abs_e": 0.0,
+        "electron_losses": 0.0
+      }
+    },
+    {
+      "write_output": true,
+      "samples_s": {
+        "rebuild": [
+          6.972639599989634,
+          7.09297600001446,
+          6.916569299995899
+        ],
+        "reuse": [
+          5.058998199994676,
+          5.087456799985375,
+          5.078324699978111
+        ]
+      },
+      "median_s": {
+        "rebuild": 6.972639599989634,
+        "reuse": 5.078324699978111
+      },
+      "max_scale_errors": {
+        "ne": 0.0,
+        "phi": 0.0,
+        "ex": 0.0,
+        "ey": 0.0,
+        "abs_e": 0.0,
+        "electron_losses": 0.0
+      }
+    }
+  ],
+  "profile": {
+    "seconds": 4.814365199999884,
+    "cumulative_top25": "         638617 function calls (618433 primitive calls) in 4.806 seconds\n\n   Ordered by: cumulative time\n   List reduced from 670 to 25 due to restriction <25>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.001    0.001    4.806    4.806 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\pyaxistreamer-master\\streamer_drift_diffusion\\simulation.py:109(run_simulation)\n       21    0.000    0.000    3.438    0.164 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\term.py:172(solve)\n       20    0.001    0.000    3.317    0.166 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\pyaxistreamer-master\\streamer_drift_diffusion\\timestepping.py:313(advance_density)\n       21    0.001    0.000    3.285    0.156 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\term.py:115(_prepareLinearSystem)\n    62/21    0.006    0.000    3.272    0.156 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\binaryTerm.py:15(_buildAndAddMatrices)\n       20    0.009    0.000    3.242    0.162 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\pyaxistreamer-master\\streamer_drift_diffusion\\transport.py:254(step)\n       83    0.001    0.000    2.907    0.035 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\unaryTerm.py:43(_buildAndAddMatrices)\n       20    0.001    0.000    1.675    0.084 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\abstractConvectionTerm.py:158(_buildMatrix)\n       21    0.005    0.000    1.281    0.061 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\pyaxistreamer-master\\streamer_drift_diffusion\\simulation.py:18(prepare_step)\n10631/4949    0.027    0.000    1.218    0.000 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\variables\\variable.py:465(_getValue)\n       20    0.003    0.000    1.156    0.058 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\faceTerm.py:128(_buildMatrix)\n       21    0.000    0.000    1.128    0.054 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\pyaxistreamer-master\\streamer_drift_diffusion\\electrostatics.py:276(calculate_potential)\n       21    0.006    0.000    1.128    0.054 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\pyaxistreamer-master\\streamer_drift_diffusion\\electrostatics.py:183(solve)\n 2636/788    0.006    0.000    1.105    0.001 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\variables\\operatorVariable.py:44(_calcValue)\n       20    0.000    0.000    1.091    0.055 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\faceTerm.py:60(_explicitBuildMatrix_)\n       20    0.007    0.000    1.089    0.054 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\faceTerm.py:115(_explicitBuildMatrixInline_)\n       40    0.001    0.000    1.010    0.025 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\tools\\vector.py:52(putAdd)\n       40    1.007    0.025    1.009    0.025 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\tools\\vector.py:10(_putAdd)\n 1245/393    0.008    0.000    1.007    0.003 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\variables\\binaryOperatorVariable.py:38(_calcValue_)\n 1411/778    0.005    0.000    0.959    0.001 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\variables\\unaryOperatorVariable.py:34(_calcValue_)\n      105    0.001    0.000    0.952    0.009 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\variables\\addOverFacesVariable.py:25(_calcValue)\n      105    0.020    0.000    0.951    0.009 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\variables\\addOverFacesVariable.py:67(_calcValueNoInline)\n       41    0.002    0.000    0.949    0.023 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\solvers\\solver.py:181(_solve)\n       21    0.000    0.000    0.934    0.044 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\abstractDiffusionTerm.py:411(_buildMatrix)\n       21    0.002    0.000    0.934    0.044 C:\\Users\\daiko\\Documents\\Python_venvSystem\\3.14system\\PyAxiStreamer\\env_pyaxistreamer_petsc\\Lib\\site-packages\\fipy\\terms\\abstractDiffusionTerm.py:611(_secondOrderBuildMatrix)\n\n\n"
+  }
+}

@@ -4,7 +4,7 @@ import numpy as np
 
 from fipy import (CellVariable, ExplicitDiffusionTerm, ExplicitUpwindConvectionTerm,
                   FaceVariable, TransientTerm)
-from fipy.solvers import LinearLUSolver
+from fipy.solvers import LinearLUSolver, solver_suite
 
 
 
@@ -109,6 +109,11 @@ class ElectronTransport:
     流出数の累積は受理を判断する呼出側が担当する。
     時間ループはprepare()の面係数をCFL・輸送・流出数へ共用する。
     単独のstep()は既定で係数を再評価し、速度・Dの変更を反映する。
+    未知量の行列は正の対角行列。PETScではpreonly/Jacobiによる対角求解を使い、
+    微小な係数がLUの絶対ゼロピボット閾値に掛かることを避ける。SciPyではLUを使う。
+    いずれも初期残差を基準に解き、右辺に比べて小さい輸送変化も省略しない。
+    FiPyの陽的拡散項は組立時の現在値を使うため、求解前に現在値をゼロにしない。
+    全輸送係数が0なら現在値をそのまま保持し、不要な対角求解による丸め電荷を作らない。
 
     Examples
     --------
@@ -168,7 +173,11 @@ class ElectronTransport:
                          == ExplicitDiffusionTerm(coeff=self.diffusion)
                          - _ExplicitUpwind(coeff=self.velocity)
                          - self.absorption * self.density.old)
-        self.solver = LinearLUSolver(tolerance=1e-12)
+        self.solver = LinearLUSolver(tolerance=1e-12, criterion='initial')
+        if solver_suite == 'petsc':
+            from fipy.solvers.petsc import JacobiPreconditioner
+            # FiPy 4.0.3のLUクラスはprecon引数を固定するため、生成後に対角PCを設定する。
+            self.solver.preconditioner = JacobiPreconditioner()
 
     def prepare(self, state):
         """現在の速度・Dから、CFL・輸送・境界流出が共有する面係数を準備する。
@@ -294,6 +303,8 @@ class ElectronTransport:
             raise FloatingPointError("nonfinite transport density")
         grid = self.grid
         self.density.updateOld()
+        if not (np.any(self.velocity.value) or np.any(self.diffusion.value) or np.any(self.boundary_rates)):
+            return np.zeros(3)
         old = self.density.old.value.reshape(self.shape, order='F')
         low_density, high_density = grid.adjacent(old)
         losses = 2*np.pi*dt*np.bincount(grid.boundary_kind,

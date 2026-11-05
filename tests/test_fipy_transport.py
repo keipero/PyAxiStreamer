@@ -19,6 +19,40 @@ def gas_state(nr=3, nz=4, spacing=1.):
 
 
 class FiPyTransportTests(unittest.TestCase):
+    def test_zero_transport_preserves_density_exactly_and_updates_old_values(self):
+        """輸送なしでは丸め差を作らず、旧値だけを更新して密度を保持する。"""
+        state = gas_state()
+        state.ne[:] = np.random.default_rng(83).random(state.ne.shape)*1e13
+        before = state.ne.copy()
+        operator = ElectronTransport(state, 1.)
+        with patch.object(operator.equation, 'solve', side_effect=AssertionError('unneeded solve')):
+            losses = operator.step(state, 3e-13)
+        assert_array_equal(state.ne, before)
+        assert_array_equal(operator.density.old.value, before.ravel(order='F'))
+        assert_array_equal(losses, 0.)
+
+    def test_small_transport_change_is_not_skipped_by_relative_rhs_tolerance(self):
+        """許容値より小さい相対変化でも、初期残差を基準に実際の輸送を解く。"""
+        state = gas_state(nr=2, nz=3)
+        state.ne[:] = 1.
+        state.vey[:, -1] = 1.
+        dt = 5e-14
+        expected = state.ne.copy()
+        expected[:, -1] -= dt
+        losses = ElectronTransport(state, 1.).step(state, dt)
+        assert_allclose(state.ne, expected, rtol=0., atol=3*np.finfo(float).eps)
+        self.assertGreater(losses[2], 0.)
+
+    def test_zero_rhs_with_nonzero_old_density_gives_exactly_zero_solution(self):
+        """旧密度が非ゼロでも、全量流出して右辺0になったセルは0へ更新する。"""
+        state = gas_state(nr=2, nz=3)
+        state.ne[:, -1] = 1.
+        state.vey[:, -1] = 1.
+        initial = 2*np.pi*np.sum(state.ne*state.volume)
+        losses = ElectronTransport(state, 1.).step(state, 1.)
+        assert_array_equal(state.ne, 0.)
+        assert_allclose(losses, [0., 0., initial], rtol=1e-14)
+
     def test_prepared_limits_match_diagonal_of_actual_fipy_update(self):
         """孤立した単位密度の減少率から、合算・純拡散CFLを独立に検査する。"""
         state = gas_state()
@@ -231,6 +265,7 @@ class FiPyTransportTests(unittest.TestCase):
     def test_nonfinite_solver_result_is_not_committed(self):
         state = gas_state()
         state.ne[:] = 1.
+        state.vey[:] = 1.
         operator = ElectronTransport(state, 1.)
 
         def corrupt(**kwargs):
@@ -241,8 +276,11 @@ class FiPyTransportTests(unittest.TestCase):
                 operator.step(state, .1)
         assert_array_equal(state.ne, 1.)
         # 失敗した内部変数を、次の試行ではstateから復元する。
-        assert_array_equal(operator.step(state, .05), 0.)
-        assert_allclose(state.ne, 1., rtol=1e-14)
+        losses = operator.step(state, .05)
+        expected = np.ones_like(state.ne)
+        expected[:, 0] = .95
+        assert_allclose(state.ne, expected, rtol=1e-14)
+        assert_allclose(losses, [0., 0., 2*np.pi*.05*state.grid.areas[1][:, -1].sum()], rtol=1e-14)
 
     def test_invalid_velocity_and_geometry_fail_before_commit(self):
         state = gas_state()

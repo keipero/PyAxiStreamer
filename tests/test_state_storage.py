@@ -71,6 +71,7 @@ class StateStorageTests(unittest.TestCase):
         """求解途中で正本を書き換えて例外を送出しても元の密度へ戻る。"""
         state = initialize_simulation(self.config())
         state.ne_var.setValue(np.arange(1., 7.))
+        state.vey[:] = 1.
         original = state.ne.copy()
         transport = ElectronTransport(state, state.grid.spacing)
 
@@ -80,7 +81,7 @@ class StateStorageTests(unittest.TestCase):
             Parameters
             ----------
             **kwargs : object
-                FiPy方程式のsolve()引数。検査には使わない。
+                FiPyソルバーの_solve()引数。検査には使わない。
 
             Raises
             ------
@@ -160,7 +161,7 @@ class StateStorageTests(unittest.TestCase):
             state.phi_var.setValue(np.nan)
             raise RuntimeError('Poisson failure')
 
-        with patch.object(state.poisson.equation, 'solve', side_effect=fail):
+        with patch.object(state.poisson.solver, '_solve', side_effect=fail):
             with self.assertRaisesRegex(RuntimeError, 'Poisson failure'):
                 calculate_potential(state, config)
         assert_array_equal(view, original)

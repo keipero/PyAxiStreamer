@@ -1,5 +1,5 @@
 """固定／適応刻みの共通ループ。同じ実時刻の密度・電場を保存する。"""
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 import math
 
 import numpy as np
@@ -147,6 +147,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
     適応刻みだけが失敗した更新を復元・半減・再試行する。
     無出力でも同じイベントで刻みを分割するため、保存の有無で積分経路は変わらない。
     背景加算量はbackground_ionization * actual_dt / config.dt。
+    終了時は成功・例外ともPoissonのPETScリソースを解放する。返した状態からの再求解は可能。
 
     Examples
     --------
@@ -166,7 +167,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
     interval = config.output_interval
     time, previous_dt, step, output_number = 0.0, None, 0, 1
     context = SimulationOutput(output_dir, config, state) if write_output else nullcontext(None)
-    with context as output:
+    with closing(state.poisson), context as output:
         try:
             prepare_step(state, config, time, waveform=waveform, verbose=verbose)
             if output:

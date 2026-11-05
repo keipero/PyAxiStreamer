@@ -2,7 +2,7 @@
 import math
 import numpy as np
 from fipy import CellVariable, FaceVariable, DiffusionTerm, ImplicitSourceTerm
-from fipy.solvers import LinearLUSolver
+from fipy.solvers import LinearLUSolver, solver_suite
 
 from .simulation_types import molecular_density
 from .voltage_waveforms import applied_voltage
@@ -57,6 +57,8 @@ class PoissonSolver:
         気体True、電極False。初期化後の形状は固定する。
     config : SimulationConfig
         物理定数、電圧、時間刻み・安定条件を保持する設定。
+    reuse_matrix : bool, optional
+        PETScの行列・LU分解を再利用する。既定True。SciPyではFalseとして扱う。
 
     Attributes
     ----------
@@ -72,8 +74,10 @@ class PoissonSolver:
         境界対角係数 [m⁻²]。金属セルは独立固定式の係数。
     equation : fipy.terms.term.Term
         FiPyで組み立てる総電位の方程式。
-    solver : fipy.solvers.LinearLUSolver
-        選択されたFiPyバックエンドのLUソルバー。
+    solver : fipy.solvers.LinearLUSolver or CachedLUSolver
+        選択されたFiPyバックエンドのLUソルバー。PETScの既定は固定行列・LUを再利用する。
+    reuse_matrix : bool
+        実際に固定行列・LUを再利用するかどうか。初期化後に変更しない。
     tolerance, residual : float
         許容値と直近のmax(abs(A*phi-b))/max(abs(b))。
 
@@ -82,8 +86,11 @@ class PoissonSolver:
     方程式は -laplacian(phi)=rho。rhoは電荷密度/epsilon0 [V/m²]。
     気体間だけをDiffusionTermで結合し、境界は共有の面積・半セル距離から対角項と源を作る。
     金属セルは気体から切り離した独立固定式で、大きな罰則係数を使わない。
-    メッシュと方程式オブジェクトは再利用するが、通常のFiPy solve()により組立・LU分解は毎回行う。
+    PETScの既定ではFiPyで一度だけ行列を組み、右辺を更新して同じKSP・LU分解を使う。
+    SciPyまたはreuse_matrix=FalseではFiPyの通常の組立・求解を毎回行う。
     設定・気体マスクの検査はinitialize_simulation()が担当する。内部電極形状は求解中に変えない。
+    格子・係数・電極形状の変更には新しいPoissonSolverを作る。外端電位応答の変更は右辺に反映する。
+    close()でPETScリソースを解放でき、通常の時間ループは成功・失敗とも終了時に呼ぶ。
 
     Examples
     --------
@@ -97,7 +104,7 @@ class PoissonSolver:
     >>> float(answer.max())
     0.0
     """
-    def __init__(self, grid, gas, config):
+    def __init__(self, grid, gas, config, *, reuse_matrix=True):
         """共有メッシュ上に境界対角・境界源とFiPy方程式を準備する。
 
         Parameters
@@ -108,6 +115,8 @@ class PoissonSolver:
             気体True、電極False。初期化後の形状は固定する。
         config : SimulationConfig
             物理定数、電圧、時間刻み・安定条件を保持する設定。
+        reuse_matrix : bool, optional
+            PETScで固定行列・LUを再利用するかどうか。既定True。比較計測時はFalseを指定できる。
 
         Notes
         -----
@@ -139,7 +148,10 @@ class PoissonSolver:
         self.equation.cacheMatrix()
         self.equation.cacheRHSvector()
         self.tolerance = config.poisson_tolerance
-        self.solver = LinearLUSolver(tolerance=self.tolerance, criterion='RHS')
+        self.reuse_matrix = reuse_matrix and solver_suite == 'petsc'
+        if self.reuse_matrix:
+            from ._petsc import CachedLUSolver
+        self.solver = (CachedLUSolver if self.reuse_matrix else LinearLUSolver)(tolerance=self.tolerance, criterion='RHS')
         self.residual = 0.
 
     @property
@@ -192,8 +204,10 @@ class PoissonSolver:
         Notes
         -----
         LUには初期推定が不要なため初期値を0にする。境界右辺に比べて小さい電荷変化も省略しない。
+        PETSc再利用時はFiPyの保存済み行列を保持し、体積を掛けた右辺だけを更新する。
+        FiPy 4.0.3の_storeMatrix()と_solve()へ渡し、通常と同じ正本・ベクトル変換を使う。
         残差の右辺が0の場合、分母下限にはnp.finfo(float).tinyを使う。
-        potentialはstate.phi_varと同じ正本。残差異常・求解例外では求解前の電位へ復元する。
+        potentialはstate.phi_varと同じ正本。残差異常・求解例外では求解前の電位へ復元しKSPを解放する。
         退避コピーはこの呼出し中だけ保持し、解を別の状態配列へコピーしない。
 
         Examples
@@ -216,7 +230,12 @@ class PoissonSolver:
         try:
             # LUはゼロ初期値から解き、微小な電荷変化も省略しない。
             self.potential.setValue(0.)
-            self.equation.solve(var=self.potential, solver=self.solver)
+            if self.reuse_matrix and self.equation.matrix is not None:
+                self.equation.RHSvector[:] = self.source.value*self.grid.mesh.cellVolumes
+                self.solver._storeMatrix(self.potential, self.equation.matrix, self.equation.RHSvector)
+                self.solver._solve()
+            else:
+                self.equation.solve(var=self.potential, solver=self.solver)
             values = self.potential.value
             rhs = self.equation.RHSvector
             residual = self.equation.matrix*values-rhs
@@ -226,8 +245,32 @@ class PoissonSolver:
             self.potential.setValue(voltage, where=~self.gas.ravel(order='F'))
         except Exception:
             self.potential.setValue(previous)
+            self.close()
             raise
         return self.potential.value.reshape(self.grid.shape, order='F')
+
+    def close(self):
+        """保持するPETScのLU分解と一時ベクトルを解放する。
+
+        Returns
+        -------
+        None
+            SciPyでは何もしない。電位・FiPy行列は保持し、再求解時にKSPを再作成できる。
+
+        Notes
+        -----
+        何度呼んでもよい。固定係数を変更するためのAPIではない。
+        単独使用では明示的に呼ぶ。通常のrun_simulation()は終了時に自動で呼ぶ。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
+        >>> state = initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.))
+        >>> state.poisson.close()
+        >>> state.poisson.close()
+        """
+        if self.reuse_matrix:
+            self.solver.close()
 
 
 def calculate_potential(state, config, *, verbose=True, time=0.0, waveform=None):

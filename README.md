@@ -1,9 +1,9 @@
 # ストリーマ放電シミュレーション
 
 軸対称r-z有限体積モデルです。Poisson方程式と電子移流拡散をFiPyで解き、反応・物理係数はNumPyで評価します。
-現在のバックエンドはSciPy、PoissonはLU求解です。Numbaは不要です。
+バックエンドはSciPyまたはPETScを選択でき、PoissonはLU求解です。Numbaは不要です。
 電子密度・電位はFiPy変数を正本とし、NumPy計算には2次元ビューを渡します。
-PETSc導入前までの状態管理整理を完了しています。[状態管理の仕様・検証](FIPY_STATE_UNIFICATION.md)を参照してください。
+WindowsネイティブのPETSc環境で1プロセス実行を検証済みです。[PETSc導入結果](PETSC_BACKEND_MIGRATION.md)と[状態管理の仕様・検証](FIPY_STATE_UNIFICATION.md)を参照してください。
 
 ## 実行
 
@@ -17,6 +17,58 @@ python -m streamer_drift_diffusion --t-end=1e-12 --output=outputdata_smoke
 
 可視化用の追加依存は`python -m pip install ".[notebook]"`で導入できます。
 `run_streamer.ipynb`は同じ仮想環境のカーネルを使います。旧版を読み込み済みならカーネルを再起動してください。
+
+### WindowsでPETScを使う場合
+
+専用Conda環境は、親の`PyAxiStreamer`フォルダで次のように作成します。既に作成済みなら再作成は不要です。
+PETSc・petsc4pyはprecise-simulation、その他はconda-forgeのバイナリを使用します。
+
+```powershell
+& "$HOME\anaconda3\python.exe" -m conda env create --solver libmamba `
+  --prefix .\env_pyaxistreamer_petsc --file .\pyaxistreamer-master\environment-petsc-win.yml
+```
+
+以後は`pyaxistreamer-master`フォルダで実行します。次は本環境で確認した起動方法です。
+`--dev`は既存Anacondaのconda.exe起動障害を回避し、`-E`はベース環境のPYTHONPATH混入を防ぎます。
+MPIのDLL検索パスも必要なため、環境のpython.exeだけを直接呼ぶ代わりにConda経由で起動します。
+
+```powershell
+# PETSc・FiPy既知解と小格子連成の確認。スクリプト内でPETScを選択する
+& "$HOME\anaconda3\python.exe" -m conda run --dev --prefix ..\env_pyaxistreamer_petsc `
+  --no-capture-output python -E tools\check_petsc_backend.py
+
+# 計算本体。FiPyのimportより前に設定する
+$env:FIPY_SOLVERS = "petsc"
+& "$HOME\anaconda3\python.exe" -m conda run --dev --prefix ..\env_pyaxistreamer_petsc `
+  --no-capture-output python -E -m streamer_drift_diffusion --t-end=1e-12 --output=outputdata_petsc_smoke
+```
+
+SciPyを選ぶ場合は`$env:FIPY_SOLVERS = "scipy"`として、新しいPythonプロセスで実行します。
+Notebookもバックエンドを設定してから新しいカーネルで使用してください。
+現在の格子・集計は1プロセス用です。Poisson反復法の性能調整とMPI領域分割は後続作業です。
+
+### NotebookのPETScカーネル
+
+`run_streamer.ipynb`は、Notebook右上で**PyAxiStreamer (PETSc)**を選択し、カーネルを再起動して先頭から実行します。
+先頭セルに表示されるPythonが`env_pyaxistreamer_petsc\python.exe`、Solverが`petsc`であることを確認してください。
+旧`env_pyaxistreamer`では、残っているmpi4pyがMPIのDLLを読み込めず、FiPyのimportで停止する場合があります。
+FiPyのバックエンド選択だけでは、その旧環境のDLL探索は修復されません。
+
+環境定義にはipykernelを含めています。以前の定義で作成した環境には次で追加できます。
+`pyaxistreamer-master`フォルダで実行してください。
+
+```powershell
+& "$HOME\anaconda3\python.exe" -m conda install --solver libmamba --freeze-installed `
+  --prefix ..\env_pyaxistreamer_petsc --override-channels -c precise-simulation -c conda-forge ipykernel=7.4.0
+
+& "$HOME\anaconda3\python.exe" -m conda run --dev --prefix ..\env_pyaxistreamer_petsc `
+  --no-capture-output python -E tools\register_petsc_kernel.py
+```
+
+登録ツールはユーザーのJupyter設定に`pyaxistreamer-petsc`を追加し、そのカーネル専用にPATH・I_MPI_ROOT・
+FIPY_SOLVERSを設定します。システムのPATHは変更しません。Pythonの`-E -s`で外側のPython環境の混入も防ぎます。
+候補に表示されなければNotebookを開き直し、カーネルを選択してください。
+環境ごとにカーネルを登録する仕組みは[IPythonの説明](https://ipython.readthedocs.io/en/stable/install/kernel_install.html)も参照できます。
 
 ```powershell
 # 標準200×150セル、DC 4 kV、終了時刻5.001 ns
@@ -58,7 +110,12 @@ FiPyの`DiffusionTerm`を気体間だけに適用し、電極・接地・外端�
 金属セルは気体との結合を切った独立固定式です。大きな罰則係数は使いません。
 外周・上端は双曲線電極の解析式に現在の印加電圧を掛けた電位、接地面は0 V、電極は印加電圧です。
 
-`PoissonSolver`とFiPy方程式は初期化時に一度作ります。現在は`LinearLUSolver`を使用し、毎回行列を組み立て・分解します。
+`PoissonSolver`とFiPy方程式は初期化時に一度作ります。
+PETScではFiPyで一度だけ行列を組み、`CachedLUSolver`で同じKSPとLU分解を保持して右辺だけを更新します。
+SciPyでは従来どおり`LinearLUSolver`で毎回組立・分解します。格子・係数・電極形状は計算中に固定します。
+PETScのオプションは`-poisson_...`接頭辞で指定します。独立した残差検査の許容値は維持します。
+時間ループは終了時にLU分解と一時ベクトルを解放します。単独使用では`state.poisson.close()`を呼べます。
+解放後も電位とFiPy行列を保持し、再求解時にKSPを再作成できます。
 LUには初期推定が不要なため、初期値を0にして解き、微小な電荷変化を相対初期残差で省略しないようにしています。
 入力・解の有限性と`max(abs(A*phi-b))/max(abs(b))`を検査し、失敗時は正本の電位を求解前へ復元して例外で停止します。
 ゼロ右辺の分母には浮動小数点のtinyを使います。
@@ -70,11 +127,14 @@ python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-outp
 `poisson_tolerance`の既定値は1e-10です。旧SORの電位更新量の許容値とは意味が異なります。
 `poisson_omega`・`poisson_progress_every`・`poisson_max_iterations`・`num_threads`と、CLIの`--poisson-omega`・`--num-threads`は廃止しました。
 `p1`～`p5`・`unit_potential`・`lphi`・`pphi`、旧Poisson関数、Numba専用処理も削除しました。
-PETScは未導入です。Windows用PETSc本体とpetsc4pyの導入・検証は後続作業です。
+PETSc側も同じFiPy方程式と残差検査を使い、初期導入ではLU求解を維持しています。
 
 ### 電子輸送と反応
 
 `ElectronTransport`は同じメッシュ上で一次上流移流と拡散を陽的Eulerで同時更新します。
+未知量の行列は対角行列で、SciPyはLU、PETScはpreonly/Jacobiで求解します。
+FiPy 4.0.3の`LinearLUSolver`を使用し、PETSc側だけ生成後に前処理をJacobiへ設定しています。
+初期残差を基準に微小な輸送変化も解き、輸送係数が全て0なら旧値を更新して現在の密度を厳密に保持します。
 気体間のDは調和平均、電極・外部境界は気体側Dと半セル距離で吸収します。外からの流入・電子放出は含めません。
 流出数は`[電極, 接地面, 上端＋外周]`の3区分です。輸送の損失項と同じ係数・旧密度から集計し、受理した更新だけ累積します。
 単独で更新する場合は`transport = ElectronTransport(state, config.delta)`を一度作り、`losses = transport.step(state, dt)`を呼びます。
@@ -141,7 +201,7 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `phi*.csv` | 総電位[V] |
 | `times.csv` | 両モードの出力番号・step・実時刻 |
 | `timestep_history.csv` | 両モードの刻み・制約・流出収支 |
-| `run_config.json` | 両モードの設定・ライブラリ版・FiPy求解方式 |
+| `run_config.json` | 設定・ライブラリ版・FiPy求解方式・Poissonの再利用有無。PETSc選択時はPETSc/MPI版・型・既定KSP/PC・接頭辞・PETSC_OPTIONSも記録 |
 | `failure.json`・`failure_state.npz` | 両モードの停止診断。NPZは数値配列のみ |
 
 保存済み結果は`notebooks/`の描画Notebook、`notebooks/animate_abs_ez.py`で参照できます。
@@ -156,6 +216,7 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `simulation_types.py` | 計算設定と状態 |
 | `initial_conditions.py` | 設定検査、初期密度とFiPyソルバーの生成 |
 | `electrostatics.py` | FiPy Poisson、電荷源、換算電場、境界電位 |
+| `_petsc.py` | 固定したFiPy行列に対するPETSc KSP・LU分解の保持と解放 |
 | `transport.py` | 共通の面係数・輸送CFL、FiPy電子輸送と吸収・流出数 |
 | `transport_coefficients.py` | 面の移動度・速度、中心のD |
 | `reactions.py` | 反応係数と密度更新 |
@@ -170,8 +231,10 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 引数・戻り値・例外に加え、物理量の単位、配列形状、状態を更新する範囲を説明し、
 可能な限り小格子や一時フォルダで実行できる`Examples`を添えます。
 docstringはコード削減の対象にせず、削減量は説明を除く実装行数で評価します。
-状態管理整理後の全67定義にdocstring、66定義に`Examples`があり、
-全モジュールのdoctest計324項目を確認しました。廃止した関数の物理条件は共通処理の説明へ引き継いでいます。
+再利用導入後の全71定義にdocstring、69定義に`Examples`があり、
+同じConda環境のSciPy・PETScそれぞれで全モジュールのdoctest計333項目が成功しました。
+回帰テストは118件で、SciPyではPETSc専用4件を除外します。
+廃止した関数の物理条件は共通処理の説明へ引き継いでいます。
 
 例えば時間ループの`Examples`は次のコマンドで実行できます。
 
@@ -185,6 +248,9 @@ python -c "import doctest; import streamer_drift_diffusion.simulation as m; doct
 python -m unittest discover -s tests
 ```
 
+PETSc環境での実行は、上記Conda起動コマンドの末尾を`python -E -m unittest discover -s tests`に変更します。
+`FIPY_SOLVERS`で対象のバックエンドを明示してください。
+
 `tests/poisson_reference.py`の独立した小格子直接解と、FiPyの組立・境界条件を比較します。
 既知の放物線解、正負電圧、離散Gauss則、微小電荷変化、非有限入力・残差異常、
 輸送の粒子収支、Gaussian格子収束、時間精度、試行の復元、CSV・CLI・波形も検証対象です。
@@ -193,6 +259,9 @@ RB-SORの更新順やスレッド数に固有のテストは、新しいPoisson�
 - [時間ループ・出力統合の仕様と検証](TIME_LOOP_UNIFICATION.md)
 - [輸送面係数の一元化](TRANSPORT_FACE_UNIFICATION.md)
 - [FiPy変数を正本とする状態管理](FIPY_STATE_UNIFICATION.md)
+- [Windows PETScの起動方法・初期導入の検証](PETSC_BACKEND_MIGRATION.md)
+- [実行速度の計測結果と、固定行列・LU再利用の改修案](PETSC_PERFORMANCE_PLAN.md)
+- [Poisson再利用の本体実装とCPU並列評価](PETSC_REUSE_AND_PARALLEL.md)
 - [Poisson移行の結果・精度・性能](FIPY_POISSON_MIGRATION.md)
 - [FiPy輸送移行と格子共通化の履歴](FIPY_MIGRATION_PLAN.md)
 - [コード削減の設計案](CODE_REDUCTION_PROPOSAL.md)

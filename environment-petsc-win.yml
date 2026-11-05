@@ -1,0 +1,19 @@
+# Windows native PETSc. Runtime validation passed on 2026-11-05:
+# PETSc/FiPy solves, 118 tests (SciPy skips 4), 333 doctests on each backend.
+# PETSc and petsc4py are Windows builds from precise-simulation.
+name: pyaxistreamer-petsc
+channels:
+  - precise-simulation
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.14.10
+  - numpy=2.5.4
+  - scipy=1.18.1
+  - fipy=4.0.3
+  - petsc=3.25.6
+  - petsc4py=3.25.6
+  - mpi4py=4.1.2
+  - impi_rt=2021.17.0
+  - ipykernel=7.4.0
+  - pip

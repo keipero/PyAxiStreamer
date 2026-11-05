@@ -7,10 +7,11 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import fipy
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
-from streamer_drift_diffusion.electrostatics import calculate_potential
+from streamer_drift_diffusion.electrostatics import calculate_potential, PoissonSolver
 from streamer_drift_diffusion.__main__ import main
 from poisson_reference import dense_poisson
 
@@ -101,8 +102,134 @@ class PoissonTests(unittest.TestCase):
                            output_dir=directory, verbose=False)
             metadata = json.loads((Path(directory)/'run_config.json').read_text(encoding='utf-8'))
             self.assertEqual(metadata['poisson_backend'], 'fipy')
-            self.assertEqual(metadata['poisson_solver'], 'LinearLUSolver')
+            self.assertEqual(metadata['poisson_solver'], 'CachedLUSolver' if fipy.solvers.solver_suite == 'petsc' else 'LinearLUSolver')
+            self.assertEqual(metadata['poisson_matrix_reuse'], fipy.solvers.solver_suite == 'petsc')
             self.assertNotIn('numba_available', metadata)
+            self.assertEqual(metadata['fipy_solver_suite'], fipy.solvers.solver_suite)
+            if fipy.solvers.solver_suite == 'petsc':
+                from petsc4py import PETSc
+                self.assertEqual(metadata['petsc_version'], '.'.join(map(str, PETSc.Sys.getVersion())))
+                self.assertEqual(metadata['petsc_scalar_dtype'], 'float64')
+                self.assertEqual(metadata['transport_default_pc'], 'jacobi')
+                self.assertIn('mpi_library', metadata)
+                self.assertEqual(metadata['poisson_options_prefix'], 'poisson_')
+            else:
+                self.assertNotIn('petsc_version', metadata)
+
+    def test_repeated_sources_and_voltage_zero_return_match_dense_reference(self):
+        """同じ行列で電圧・電荷を変え、電圧0への復帰も独立解と一致させる。"""
+        state = initialize_simulation(self.config())
+        operator = state.poisson
+        self.addCleanup(operator.close)
+        with patch.object(operator.equation, 'solve', wraps=operator.equation.solve) as assembly:
+            for voltage, scale in ((500., 0.), (-500., 1.), (0., -2.), (0., 0.), (500., .01)):
+                rho = np.random.default_rng(31).normal(size=state.ne.shape)*scale
+                matrix, rhs = dense_poisson(state, voltage, rho)
+                expected = np.linalg.solve(matrix, rhs).reshape(state.ne.shape)
+                assert_allclose(operator.solve(rho, voltage), expected, rtol=1e-11, atol=1e-11)
+            self.assertEqual(assembly.call_count, 1 if operator.reuse_matrix else 5)
+
+    @unittest.skipUnless(fipy.solvers.solver_suite == 'petsc', 'PETSc cache')
+    def test_lu_factor_is_reused_and_close_allows_new_factor_without_reassembly(self):
+        """右辺変更でKSPとLU因子を保持し、明示解放後も同じ行列で再開できる。"""
+        state = initialize_simulation(self.config())
+        operator = state.poisson
+        self.addCleanup(operator.close)
+        with patch.object(operator.equation, 'solve', wraps=operator.equation.solve) as assembly:
+            operator.solve(state.rho, 500.)
+            ksp = operator.solver.ksp
+            factor = ksp.getPC().getFactorMatrix().handle
+            operator.solve(state.rho+1., -500.)
+            self.assertIs(operator.solver.ksp, ksp)
+            self.assertEqual(operator.solver.ksp.getPC().getFactorMatrix().handle, factor)
+            operator.close()
+            operator.close()
+            self.assertFalse(ksp)
+            self.assertFalse(hasattr(operator.solver, '_globalVectors'))
+            operator.solve(state.rho, 500.)
+            self.assertIsNot(operator.solver.ksp, ksp)
+            self.assertEqual(assembly.call_count, 1)
+
+    @unittest.skipUnless(fipy.solvers.solver_suite == 'petsc', 'PETSc cache')
+    def test_cached_backend_exception_and_nonfinite_solution_restore_and_recover(self):
+        """再利用中の例外・非有限解で正本を復元し、作業領域を破棄して回復する。"""
+        state = initialize_simulation(self.config())
+        operator = state.poisson
+        self.addCleanup(operator.close)
+        for failure in ('exception', 'nonfinite'):
+            operator.solve(state.rho, 500.)
+            before = state.phi.copy()
+            ksp = operator.solver.ksp
+
+            def fail(matrix, solution, rhs):
+                if failure == 'exception':
+                    raise RuntimeError('cached failure')
+                solution.set(np.nan)
+                return solution
+
+            with patch.object(operator.solver, '_solve_', side_effect=fail):
+                with self.assertRaises(RuntimeError):
+                    operator.solve(state.rho, -500.)
+            assert_array_equal(state.phi, before)
+            self.assertFalse(ksp)
+            self.assertFalse(hasattr(operator.solver, '_globalVectors'))
+            assert_allclose(operator.solve(state.rho, 500.), before, rtol=1e-14)
+
+    @unittest.skipUnless(fipy.solvers.solver_suite == 'petsc', 'PETSc cache')
+    def test_prefixed_options_failure_on_first_setup_releases_and_recovers(self):
+        """初回設定のPETScエラーを復元し、接頭辞付きオプションを修正すると再開できる。"""
+        from petsc4py import PETSc
+        options = PETSc.Options()
+        key = 'poisson_pc_type'
+        previous = options.getAll().get(key)
+        state = initialize_simulation(self.config())
+        operator = state.poisson
+        self.addCleanup(operator.close)
+        state.phi_var.setValue(17.)
+        try:
+            options[key] = 'invalid_pc_for_test'
+            with self.assertRaisesRegex(RuntimeError, 'PETSc Poisson'):
+                operator.solve(state.rho, 500.)
+            assert_array_equal(state.phi, 17.)
+            self.assertFalse(hasattr(operator.solver, 'ksp'))
+            self.assertFalse(hasattr(operator.solver, '_globalVectors'))
+            options[key] = 'lu'
+            operator.solve(state.rho, 500.)
+            self.assertEqual(operator.solver.ksp.getOptionsPrefix(), 'poisson_')
+            self.assertEqual(operator.solver.ksp.getPC().type, 'lu')
+        finally:
+            if previous is None:
+                del options[key]
+            else:
+                options[key] = previous
+
+    def test_rebuild_option_keeps_same_physics_and_run_releases_resources(self):
+        """比較用の再組立モードと既定解が一致し、時間ループ終了で分解を解放する。"""
+        config = self.config()
+        state = initialize_simulation(config)
+        rebuild = PoissonSolver(state.grid, state.gas_mask, config, reuse_matrix=False)
+        self.addCleanup(state.poisson.close)
+        self.addCleanup(rebuild.close)
+        for voltage in (500., -500.):
+            assert_allclose(state.poisson.solve(state.rho+1., voltage), rebuild.solve(state.rho+1., voltage), rtol=1e-13)
+        completed = run_simulation(config, write_output=False, verbose=False)
+        self.assertFalse(hasattr(completed.poisson.solver, 'ksp'))
+        assert_allclose(completed.poisson.solve(completed.rho, config.voltage), completed.phi)
+        completed.poisson.close()
+
+    @unittest.skipUnless(fipy.solvers.solver_suite == 'petsc', 'PETSc cache')
+    def test_standalone_solver_collection_releases_native_ksp(self):
+        """単独使用で明示closeを忘れても、回収時にPETScのKSPを解放する。"""
+        import gc
+        import weakref
+        state = initialize_simulation(self.config())
+        state.poisson.solve(state.rho, 500.)
+        reference = weakref.ref(state.poisson.solver)
+        ksp = state.poisson.solver.ksp
+        del state
+        gc.collect()
+        self.assertIsNone(reference())
+        self.assertFalse(ksp)
 
 
 if __name__ == '__main__':

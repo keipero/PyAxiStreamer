@@ -4,6 +4,8 @@ import csv
 from dataclasses import asdict
 import json
 from contextlib import ExitStack
+from importlib.metadata import version
+import os
 
 import numpy as np
 import fipy
@@ -227,6 +229,8 @@ class SimulationOutput:
     with文で使用し、入場時に設定・座標・履歴ヘッダーを作る。
     ファイル番号は出力番号であり、受理step番号や時刻ではない。
     times.csvで出力番号・step・実時刻・直前のdtを対応付ける。
+    run_config.jsonにはFiPyバックエンドを記録し、PETScの場合はPETSc・バインディング・MPIの版、
+    スカラー型、輸送の既定Jacobi前処理、PETSC_OPTIONS環境変数も記録する。
 
     Examples
     --------
@@ -292,6 +296,8 @@ class SimulationOutput:
         Notes
         -----
         初期状態の物理量フレームは自動保存しない。呼出側がprepare_step()後にsave_frame()する。
+        PETScの追加メタデータはPETSc選択時だけ収集する。既定の前処理名と環境変数は、
+        オプションを含めた実行条件の記録であり、KSPの実行時診断を代替するものではない。
         途中のファイル初期化が失敗した場合、開いたストリームを閉じる。
 
         Examples
@@ -310,9 +316,21 @@ class SimulationOutput:
         if self.directory.exists() and any(self.directory.glob("*.csv")):
             raise FileExistsError(f"output requires a folder without existing CSVs: {self.directory}")
         self.directory.mkdir(parents=True, exist_ok=True)
+        backend = {}
+        if fipy.solvers.solver_suite == 'petsc':
+            from petsc4py import PETSc
+            from mpi4py import MPI
+            backend = {"petsc_version": ".".join(map(str, PETSc.Sys.getVersion())),
+                       "poisson_options_prefix": "poisson_" if self.state.poisson.reuse_matrix else "",
+                       "poisson_default_ksp": "preonly", "poisson_default_pc": "lu",
+                       "petsc4py_version": version('petsc4py'), "mpi4py_version": version('mpi4py'),
+                       "mpi_library": MPI.Get_library_version().strip(),
+                       "petsc_scalar_dtype": np.dtype(PETSc.ScalarType).name,
+                       "transport_default_pc": "jacobi", "petsc_options": os.environ.get('PETSC_OPTIONS', '')}
         (self.directory / "run_config.json").write_text(
-            json.dumps({"config": asdict(self.config), "numpy_version": np.__version__,
+            json.dumps({"config": asdict(self.config), "numpy_version": np.__version__, **backend,
                         "poisson_backend": "fipy", "poisson_solver": type(self.state.poisson.solver).__name__,
+                        "poisson_matrix_reuse": self.state.poisson.reuse_matrix,
                         "poisson_criterion": "max_abs(A*phi-b) / max_abs(b)",
                         "transport_backend": "fipy", "transport_time_scheme": "explicit Euler",
                         "fipy_version": fipy.__version__, "scipy_version": scipy.__version__,
