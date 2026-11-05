@@ -93,11 +93,56 @@ python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-outp
 速度・Dを変更するたびに`prepare()`を呼んでください。密度の変更だけなら再利用できます。
 詳細と検証結果は[輸送面係数の一元化](TRANSPORT_FACE_UNIFICATION.md)を参照してください。
 
-`electron_diffusion`は検証用の一定係数[m²/s]で、既定0です。正の値は利用者が指定します。物理係数の自動生成やPy3bolos連成は行っていません。
-たとえば`--electron-diffusion=0.5`を指定できますが、空気の物理係数として推奨する値ではありません。
+`electron_diffusion`は経験式と旧形式の表を使う場合の検証用一定係数[m²/s]です。
+この場合の既定値0は拡散なしを表します。
 
 反応は電子衝突電離、解離付着、三体付着、背景電離を含みます。
 光電離・再結合・脱離・イオン輸送は含みません。負密度のクリップは行いません。
+
+## Py3BOLOSとCanteraの電子輸送・反応係数表
+
+Py3BOLOSとCantera 3.2を導入した環境で、用意したBOLSIG+形式のN₂/O₂断面積ファイルから係数表を生成します。
+Py3BOLOSで電子エネルギー分布（EEDF）を求め、Canteraにその分布と断面積を渡して、N₂電離、O₂電離、O₂解離付着の二体係数を個別に評価します。
+同じEEDFからPy3BOLOSで換算移動度μNと換算拡散係数DNも計算します。二体反応係数の単位はm³/sです。
+[Canteraの外部EEDF設定](https://cantera.org/stable/python/thermo.html#cantera.ThermoPhase.set_discretized_electron_energy_distribution)
+
+同梱の [air_chemistry.yaml](streamer_drift_diffusion/data/air_chemistry.yaml) で8化学種と4反応を管理します。
+YAMLの速度定数は単位倍率の参照値です。物理的な係数は二体反応ではEEDFから求め、三体付着では既存の経験式を使います。
+係数表の生成時にCanteraで機構を読み込み、速度式の次数と正味の化学量論を表へ保存します。
+格子計算ではこの情報からNumPyで全セルの反応量と時間刻み制約を評価します。生成済みの表があれば格子計算はCanteraとPy3BOLOSの追加インストールなしで実行できます。
+
+プロジェクトフォルダで仮想環境を選び、ファイル名を手元のものに置き換えて実行します。
+
+```powershell
+python -m streamer_drift_diffusion.plasma_chemistry air_cross_sections.txt air_mechanism_rates.json
+python -m streamer_drift_diffusion --chemistry-table air_mechanism_rates.json --adaptive-timestep --output outputdata_chemistry
+```
+
+PythonやNotebookからは `SimulationConfig(chemistry_table="air_mechanism_rates.json", adaptive_timestep=True)` で指定できます。
+現在の生成コマンドはCantera機構とBOLOS輸送係数を含む形式3を出力します。YAMLを編集した場合は表を再生成します。
+形式1・2も読み込めます。形式1はドリフト式と一定拡散を使い、形式2はBOLOS輸送を使います。
+表を省略した場合は経験式で計算します。形式2・3では `electron_diffusion` は既定値0にします。
+
+断面積ファイルは `N2 -> N2+`、`O2 -> O2+` の電離と、`O2 -> O- + O` の解離付着を一意に含むものを用意します。
+電離生成物の `^` 表記や、解離付着の `O2 -> O-` 表記にも対応します。
+ガス密度で正規化された付着断面積として記載されている過程は除外します。三体付着はO₂を第三体とする経験式で評価します。
+BOLOS輸送では、三体付着の係数は0 Tdの値0と表の最小正電場点での経験値を線形補間します。
+これは拡散で生じた微弱電場で経験式が発散するのを防ぐための低電場近似です。
+
+生成時の既定条件は300 K、N₂:O₂=80:20、0 Tdと0.01～2000 Tdの正の257点、450 eV・1200セルの二次エネルギー格子です。
+表の温度・組成は計算設定と一致させます。二体反応係数は気体セルの中心E/Nから線形補間し、局所数密度を用いて反応量を計算します。
+輸送では面のE/NからμN、セル中心のE/NからDNを補間し、1 atmの分子数密度Nで割ります。
+面のドリフト速度は法線方向の −μE で、拡散には両方向共通のスカラーDを使います。
+0 Tdでは二体反応係数を0とし、移動度と拡散係数は0 TdでのBOLOS解を使います。上限を超えるE/Nでは停止します。
+`--min-td`、`--max-td`、`--points`、`--energy-max`、`--energy-cells` で、使う断面積と電場範囲に合わせて生成条件を調整できます。
+
+反応は陽的に更新し、安定刻みの判定にも表の係数を使います。解離付着で生じる中性Oを追跡し、係数表モードでは `O0.csv` などに保存します。
+`run_config.json` には輸送係数の出所、反応方式、断面積・係数表・反応機構のSHA-256、生成条件を記録します。
+
+Py3BOLOS付属のPhelpsデータで検証しました。0 Tdではμ＝約7.90 m²/(V·s)、D＝約0.0360 m²/s、ドリフト速度は0 m/sでした。
+0 Tdと0.025～2000 Tdの11点で直接計算と比較し、表の補間差は移動度で最大2.02%、拡散係数で最大0.30%でした。
+同じ点で1e-20 m³/s以上の二体反応係数の補間差は最大1.01%でした。
+100・300 Tdの0次元で、Canteraの生成速度と密度更新を照合し、反応に伴う電荷・元素数の保存を確認しました。
 
 ## 時間刻みと出力時刻
 
@@ -107,7 +152,7 @@ python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-outp
 `t_end`まで計算し、`output_interval`ごとの出力と最終状態を保存します。全フレームで電位・電場・密度を同じ時刻に揃えます。
 固定モードは`dt`を基本幅とし、出力時刻・波形の折れ点・終端に合わせる部分だけ短縮します。
 実際の刻みが合算輸送CFL・反応・誘電緩和の安全上限を超える場合、または更新後の検査に失敗した場合は停止します。
-適応モードは安定条件と成長率上限から刻みを選び、失敗した試行の7密度を復元してdtを半減します。
+適応モードは安定条件と成長率上限から刻みを選び、失敗した試行の全密度を復元してdtを半減します。
 背景加算量は両モードとも`background_ionization*actual_dt/config.dt`です。
 電子密度の現在値はstateと輸送で共有し、各試行の開始時にFiPyの旧値を更新します。
 dt_minへの無条件な切上げは行いません。イベントまでの端数は安全側の短縮なのでdt_min未満も許します。
@@ -165,6 +210,7 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `transport.py` | 共通の面係数・輸送CFL、FiPy電子輸送と吸収・流出数 |
 | `transport_coefficients.py` | 面の移動度・速度、中心のD |
 | `reactions.py` | 反応係数と密度更新 |
+| `kinetics.py` | Cantera機構の化学量論と格子上の質量作用則 |
 | `timestepping.py` | 安定刻み、共通のadvance_density()、試行の受理・復元 |
 | `simulation.py` | 固定／適応の共通時間ループと同時刻の電場・係数準備 |
 | `voltage_waveforms.py` | DC・インパルス入力、補間・単位換算 |
@@ -177,7 +223,7 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 可能な限り小格子や一時フォルダで実行できる`Examples`を添えます。
 docstringはコード削減の対象にせず、削減量は説明を除く実装行数で評価します。
 SciPy LU再利用後もNumPy形式のdocstringと`Examples`を維持しています。
-全モジュールのdoctest計329項目と回帰テスト114件が成功しました。
+BOLOS輸送の追加後、全モジュールのdoctest計334項目と回帰テスト120件が成功しました。
 廃止した関数の物理条件は共通処理の説明へ引き継いでいます。
 
 例えば時間ループの`Examples`は次のコマンドで実行できます。

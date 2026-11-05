@@ -129,21 +129,27 @@ def calculate_transport_coefficients(state, config):
     state : SimulationState
         中心ex/eyと全法線面er_face/ez_face [Td]。
         vex・mobility_rは(nr+1,nz)、vey・mobility_zは(nr,nz+1)。
+        任意の係数表からμNとDNを参照する。
     config : SimulationConfig
-        一定拡散係数electron_diffusion [m^2/s]。
+        分子数密度の計算条件と、従来モードの一定拡散係数 [m²/s]。
 
     Returns
     -------
     None
         面の移動度 [m^2/(V s)]・速度 [m/s]と中心deを更新する。
 
+    Raises
+    ------
+    RuntimeError
+        BOLOS表を補間するE/Nが範囲外または不正。
+
     Notes
     -----
-    元コードの速度式を維持する。各面で法線成分と補間した接線成分の
-    hypotから強度を求めるため、異なる位置の成分を直接組み合わせない。
-    軸の半径流速・移動度は0。電極内部は0、気体と接する吸収面は保持する。
-    deは検証用の一定係数。将来のPy3bolos連成では、この格納箇所へ
-    セルごとの物理係数を与える。現在は物理係数の自動計算を行わない。
+    各面で法線成分と補間した接線成分のhypotからE/Nの大きさを求める。
+    BOLOS表では面のμNと中心のDNをNで割り、面速度は法線方向の-μEとする。
+    Dは全方向共通のスカラー。軸の半径流速・移動度、電極内部の係数は0。
+    気体に接する吸収面にはBOLOS表の移動度を使う。
+    輸送列のない場合はドリフト式と一定拡散係数を使う。
 
     Examples
     --------
@@ -158,10 +164,26 @@ def calculate_transport_coefficients(state, config):
     interior = state.grid.split_faces(state.grid.interior(state.gas_mask))
     radial = np.hypot(state.er_face, _tangential_faces(state.ey, state.gas_mask, 0, interior[0]))
     axial = np.hypot(_tangential_faces(state.ex, state.gas_mask, 1, interior[1]), state.ez_face)
-    state.mobility_r[:] = electron_mobility(radial, config)
-    state.mobility_z[:] = electron_mobility(axial, config)
+    density = molecular_density(config)
+    table = state.chemistry
+    if table is None or table.swarm is None:
+        state.mobility_r[:] = electron_mobility(radial, config)
+        state.mobility_z[:] = electron_mobility(axial, config)
+        state.de[:] = config.electron_diffusion * state.gas_mask
+    else:
+        mobility_n, diffusion_n = table.swarm.T
+        low, high = state.grid.adjacent(state.gas_mask)
+        gas_r, gas_z = state.grid.split_faces((low | high) & (state.grid.area > 0.))
+        mu_r = table.sample(radial[gas_r], column=mobility_n) / density
+        mu_z = table.sample(axial[gas_z], column=mobility_n) / density
+        diffusion = table.sample(state.abs_e[state.gas_mask], column=diffusion_n) / density
+        state.mobility_r.fill(0.)
+        state.mobility_z.fill(0.)
+        state.de.fill(0.)
+        state.mobility_r[gas_r] = mu_r
+        state.mobility_z[gas_z] = mu_z
+        state.de[state.gas_mask] = diffusion
     state.mobility_r[0] = 0.
-    scale = molecular_density(config) * 1e-21
+    scale = density * 1e-21
     state.vex[:] = -state.mobility_r * state.er_face * scale
     state.vey[:] = -state.mobility_z * state.ez_face * scale
-    state.de[:] = config.electron_diffusion * state.gas_mask

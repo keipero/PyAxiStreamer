@@ -1,0 +1,32 @@
+description: >
+  N2/O2 electron chemistry used by PyAxiStreamer. The rate constants below
+  are unit reference values. Use the electron collision table for the first
+  three rates and the application three-body attachment model for the fourth.
+
+units: {length: m, quantity: kmol, activation-energy: J/kmol}
+
+phases:
+- name: air-chemistry
+  thermo: ideal-gas
+  kinetics: gas
+  species:
+  - nasa_gas.yaml/species: [Electron, N2, O2, N2+, O2+, O-, O2-, O]
+  reactions: all
+  state: {T: 300.0, P: 1 atm}
+
+reactions:
+- id: n2-ionization
+  equation: Electron + N2 => 2 Electron + N2+
+  type: elementary
+  rate-constant: {A: 1.0, b: 0.0, Ea: 0.0}
+- id: o2-ionization
+  equation: Electron + O2 => 2 Electron + O2+
+  type: elementary
+  rate-constant: {A: 1.0, b: 0.0, Ea: 0.0}
+- id: o2-dissociative-attachment
+  equation: Electron + O2 => O- + O
+  rate-constant: {A: 1.0, b: 0.0, Ea: 0.0}
+- id: o2-three-body-attachment
+  equation: Electron + 2 O2 => O2- + O2
+  type: three-body
+  rate-constant: {A: 1.0, b: 0.0, Ea: 0.0}

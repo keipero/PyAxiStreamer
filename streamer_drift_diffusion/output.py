@@ -160,7 +160,7 @@ def write_step_output(output_dir, step, state):
     Returns
     -------
     None
-        ne、absE、Ex、Ey、phiのCSVを作成する。
+        ne、absE、Ex、Ey、phiのCSVを作成する。係数表モードでは中性酸素Oも保存する。
 
     Raises
     ------
@@ -190,6 +190,8 @@ def write_step_output(output_dir, step, state):
     for name, values in (("ne", state.ne), ("absE", state.abs_e),
                          ("Ex", state.ex), ("Ey", state.ey), ("phi", state.phi)):
         write_c_matrix(Path(output_dir) / f"{name}{step}.csv", values)
+    if state.chemistry is not None:
+        write_c_matrix(Path(output_dir) / f"O{step}.csv", state.o)
 
 
 class SimulationOutput:
@@ -310,8 +312,13 @@ class SimulationOutput:
         if self.directory.exists() and any(self.directory.glob("*.csv")):
             raise FileExistsError(f"output requires a folder without existing CSVs: {self.directory}")
         self.directory.mkdir(parents=True, exist_ok=True)
+        settings = asdict(self.config)
+        chemistry = self.state.chemistry
+        use_swarm = chemistry is not None and chemistry.swarm is not None
+        if chemistry is not None:
+            settings["chemistry_table"] = str(self.config.chemistry_table)
         (self.directory / "run_config.json").write_text(
-            json.dumps({"config": asdict(self.config), "numpy_version": np.__version__,
+            json.dumps({"config": settings, "numpy_version": np.__version__,
                         "poisson_backend": "fipy", "poisson_solver": "SuperLU",
                         "poisson_solver_suite": "scipy", "poisson_matrix_reused": True,
                         "poisson_factorization_reused": True,
@@ -323,7 +330,12 @@ class SimulationOutput:
                         "model": "staggered-v1", "electrode_boundary": "staircase Dirichlet",
                         "field_layout": "cell-centered Ex/Ey/absE; complete face fields and velocities in state",
                         "field_unit": "Td",
-                        "electron_diffusion_source": "constant verification coefficient; Py3bolos not coupled",
+                        "electron_mobility_source": "py3bolos-table" if use_swarm else "empirical",
+                        "electron_diffusion_source": "py3bolos-table" if use_swarm else "constant verification coefficient",
+                        "chemistry_backend": "empirical" if chemistry is None else "py3bolos-cantera-table",
+                        "chemistry_table_metadata": None if chemistry is None else {
+                            **chemistry.metadata, "max_field_td": float(chemistry.field_td[-1]),
+                        },
                         "outer_potential": "analytic Dirichlet voltage at outer faces",
                         "output_index": "frame", "field_and_density_times": "time_s"}, indent=2), encoding="utf-8")
         try:

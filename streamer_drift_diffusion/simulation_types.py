@@ -9,6 +9,7 @@ from .grid import CylindricalGrid
 
 if TYPE_CHECKING:
     from .electrostatics import PoissonSolver
+    from .plasma_chemistry import ReactionTable
 
 # プロジェクトルートの絶対パス
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -91,7 +92,10 @@ class SimulationConfig:
     electrode_gap : float, optional
         接地平面z=0から電極先端までの距離[m]。領域寸法とは独立。 Default: ``0.001``.
     electron_diffusion : float, optional
-        検証用の一定電子拡散係数 [m^2/s]。0は拡散なし。 Default: ``0.0``.
+        従来モードの一定電子拡散係数 [m²/s]。0は拡散なし。
+        BOLOS輸送列のある表を使う場合は既定値0を指定する。
+    chemistry_table : str or pathlib.Path or None, optional
+        Py3BOLOSとCanteraで生成した電子輸送・反応係数表。Noneなら従来の経験式。
 
     Notes
     -----
@@ -143,7 +147,8 @@ class SimulationConfig:
     max_steps: int = 1000000 # 両モード共通の受理step数の停止上限
     output_interval: float = 1e-10 # 出力の実時間間隔 [s]
     electrode_gap: float = 1e-3 # 接地平面z=0から電極先端までの距離[m]。領域寸法とは独立。
-    electron_diffusion: float = 0.0 # 検証用の一定電子拡散係数 [m^2/s]。0は拡散なし。
+    electron_diffusion: float = 0.0 # 従来モード用の一定電子拡散係数 [m²/s]。
+    chemistry_table: str | Path | None = None
 
 
 def molecular_density(config):
@@ -253,17 +258,24 @@ class SimulationState:
     vey : ndarray of float64, shape (nr, nz+1)
         全軸方向面の電子ドリフト速度 [m/s]。形状(nr,nz+1)
     k1 : ndarray of float64, shape (nr, nz)
-        電子衝突電離の反応係数 [m^3/s]（N₂・O₂に共通）
+        N₂の電子衝突電離の反応係数 [m^3/s]。
+    k1_o2 : ndarray of float64 or None
+        O₂の電子衝突電離の反応係数 [m^3/s]。係数表モードでは形状(nr,nz)。
+        Noneなら経験式のk1をN₂とO₂に共通で使う。
     k2 : ndarray of float64, shape (nr, nz)
         O₂への解離付着によってO⁻を生成する反応係数 [m^3/s]
     k3 : ndarray of float64, shape (nr, nz)
         O₂を第三体とする三体付着でO₂⁻を生成する反応係数 [m^6/s]
+    o : ndarray of float64, shape (nr, nz)
+        解離付着で生じる中性酸素原子Oの数密度 [m⁻³]。
+    chemistry : ReactionTable or None
+        二体電子反応係数表。Noneなら従来の経験式を使う。
     gas_mask : ndarray of bool, shape (nr, nz)
         気体セル=True、電極セル=Falseのbool配列
     electron_losses : ndarray of float64, shape (3,)
         累積流出電子数 [電極、接地平面、上端＋外周]（2πを含む）
     de : ndarray of float64, shape (nr, nz)
-        気体セルの電子拡散係数 [m^2/s]。電極内は0。
+        気体セルの電子拡散係数 [m^2/s]。BOLOS表または一定係数を使用し、電極内は0。
     er_face : ndarray of float64, shape (nr+1, nz)
         全半径面の法線方向換算電場E_r/N [Td]
     ez_face : ndarray of float64, shape (nr, nz+1)
@@ -331,7 +343,7 @@ class SimulationState:
     rho: np.ndarray  # Poisson電荷源 [V/m^2]。正味電荷密度/ε₀（半径重みなし）
     vex: np.ndarray  # 全半径面の電子ドリフト速度 [m/s]。形状(nr+1,nz)
     vey: np.ndarray  # 全軸方向面の電子ドリフト速度 [m/s]。形状(nr,nz+1)
-    k1: np.ndarray  # 電子衝突電離の反応係数 [m^3/s]（N₂・O₂に共通）
+    k1: np.ndarray  # N₂の電子衝突電離の反応係数 [m^3/s]
     k2: np.ndarray  # O₂への解離付着によってO⁻を生成する反応係数 [m^3/s]
     k3: np.ndarray  # O₂を第三体とする三体付着でO₂⁻を生成する反応係数 [m^6/s]
     gas_mask: np.ndarray  # 気体セル=True、電極セル=Falseのbool配列
@@ -343,6 +355,9 @@ class SimulationState:
     mobility_z: np.ndarray  # 軸方向面で評価した電子移動度 [m^2/(V s)]
     radial_boundary: np.ndarray  # 外周面の単位印加電圧に対する電位 [V/V]。長さnz
     upper_boundary: np.ndarray  # 上端面の単位印加電圧に対する電位 [V/V]。長さnr
+    o: np.ndarray
+    k1_o2: np.ndarray | None
+    chemistry: "ReactionTable | None"
 
     @property
     def ne(self):

@@ -72,8 +72,9 @@ def prepare_step(state, config, time, *, waveform=None, verbose=True):
         calculate_electric_field(state, config, voltage=voltage)
         calculate_transport_coefficients(state, config)
         calculate_reaction_coefficients(state)
-    for name in ("rho", "phi", "ex", "ey", "abs_e", "vex", "vey", "k1", "k2", "k3"):
-        if not np.all(np.isfinite(getattr(state, name))):
+    for name in ("rho", "phi", "ex", "ey", "abs_e", "vex", "vey", "k1", "k1_o2", "k2", "k3"):
+        values = getattr(state, name)
+        if values is not None and not np.all(np.isfinite(values)):
             raise TimestepError(f"nonfinite prepared field: {name}")
 
 
