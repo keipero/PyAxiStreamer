@@ -1,0 +1,13 @@
+# CPU shared-memory candidate; validate the migration before replacing the PETSc environment.
+name: pyaxistreamer-cpu
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.14.10
+  - numpy=2.5.4
+  - scipy=1.18.1
+  - fipy=4.0.3
+  - numba=0.68.1
+  - ipykernel=7.4.0
+  - pip

@@ -1,0 +1,364 @@
+{
+  "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+  "cases": [
+    {
+      "diffusion": 0.0,
+      "adaptive": false,
+      "voltage": "positive",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 5.70190841695494e-15,
+          "csv": 2.307871830866924e-15,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 5.873401583231493e-15,
+          "csv": 9.00509634488968e-15,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 5.873401583231493e-15,
+          "csv": 9.00509634488968e-15,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.0,
+      "adaptive": false,
+      "voltage": "negative",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 3.845691548512596e-15,
+          "csv": 1.3788448376269369e-12,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 4.419186674269739e-15,
+          "csv": 3.0371852504485233e-12,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 4.419186674269739e-15,
+          "csv": 3.0371852504485233e-12,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.0,
+      "adaptive": false,
+      "voltage": "impulse",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 5.107691850600951e-13,
+          "csv": 1.6798888318906162e-14,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 1.4335186787464496e-13,
+          "csv": 1.8274466346918188e-14,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 1.4335186787464496e-13,
+          "csv": 1.8274466346918188e-14,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.0,
+      "adaptive": true,
+      "voltage": "positive",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 5.70190841695494e-15,
+          "csv": 2.307871830866924e-15,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 5.873401583231493e-15,
+          "csv": 9.00509634488968e-15,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 5.873401583231493e-15,
+          "csv": 9.00509634488968e-15,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.0,
+      "adaptive": true,
+      "voltage": "negative",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 3.845691548512596e-15,
+          "csv": 1.3788448376269369e-12,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 4.419186674269739e-15,
+          "csv": 3.0371852504485233e-12,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 4.419186674269739e-15,
+          "csv": 3.0371852504485233e-12,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.0,
+      "adaptive": true,
+      "voltage": "impulse",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 5.107691850600951e-13,
+          "csv": 1.6798888318906162e-14,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 1.4335186787464496e-13,
+          "csv": 1.8274466346918188e-14,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 1.4335186787464496e-13,
+          "csv": 1.8274466346918188e-14,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.5,
+      "adaptive": false,
+      "voltage": "positive",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 2.9024288477079334e-15,
+          "csv": 1.983402583961258e-15,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 2.9024288477079334e-15,
+          "csv": 6.894768912781091e-15,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 2.9024288477079334e-15,
+          "csv": 6.894768912781091e-15,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.5,
+      "adaptive": false,
+      "voltage": "negative",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 2.9110126807160824e-15,
+          "csv": 2.248200138132747e-14,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 2.9110126807160824e-15,
+          "csv": 6.595822464080632e-14,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 2.9110126807160824e-15,
+          "csv": 6.595822464080632e-14,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.5,
+      "adaptive": false,
+      "voltage": "impulse",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 6.8921692015933226e-15,
+          "csv": 5.4744726776061285e-15,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 1.0917585343577357e-13,
+          "csv": 1.8426273890479164e-14,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 1.0917585343577357e-13,
+          "csv": 1.8426273890479164e-14,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.5,
+      "adaptive": true,
+      "voltage": "positive",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 2.9024288477079334e-15,
+          "csv": 1.983402583961258e-15,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 2.9024288477079334e-15,
+          "csv": 6.894768912781091e-15,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 2.9024288477079334e-15,
+          "csv": 6.894768912781091e-15,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.5,
+      "adaptive": true,
+      "voltage": "negative",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 2.9110126807160824e-15,
+          "csv": 2.248200138132747e-14,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 2.9110126807160824e-15,
+          "csv": 6.595822464080632e-14,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 2.9110126807160824e-15,
+          "csv": 6.595822464080632e-14,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    },
+    {
+      "diffusion": 0.5,
+      "adaptive": true,
+      "voltage": "impulse",
+      "comparisons": {
+        "scipy_reuse": {
+          "state": 6.8921692015933226e-15,
+          "csv": 5.4744726776061285e-15,
+          "bitwise_equal": false
+        },
+        "numba_1": {
+          "state": 1.0917585343577357e-13,
+          "csv": 1.8426273890479164e-14,
+          "bitwise_equal": false
+        },
+        "numba_4": {
+          "state": 1.0917585343577357e-13,
+          "csv": 1.8426273890479164e-14,
+          "bitwise_equal": false
+        }
+      },
+      "comparison_arrays": 95,
+      "thread_comparison": {
+        "state": 0.0,
+        "csv": 0.0,
+        "bitwise_equal": true
+      }
+    }
+  ],
+  "state_tolerance": 1e-08,
+  "csv_tolerance": 2e-06,
+  "petsc_loaded": false,
+  "mpi_loaded": false,
+  "diffusion_tests": [
+    {
+      "threads": 1,
+      "tests": 12,
+      "passed": true
+    },
+    {
+      "threads": 4,
+      "tests": 12,
+      "passed": true
+    }
+  ],
+  "execution_notes": {
+    "prototype_only": true,
+    "production_changed": false,
+    "optional_broken_mpi_disabled_in_launcher": true,
+    "environment": "env_pyaxistreamer (existing venv)",
+    "compared_to": "FiPy/SciPy in the same environment; not current PETSc performance"
+  }
+}

@@ -262,6 +262,8 @@ RB-SORの更新順やスレッド数に固有のテストは、新しいPoisson�
 - [Windows PETScの起動方法・初期導入の検証](PETSC_BACKEND_MIGRATION.md)
 - [実行速度の計測結果と、固定行列・LU再利用の改修案](PETSC_PERFORMANCE_PLAN.md)
 - [Poisson再利用の本体実装とCPU並列評価](PETSC_REUSE_AND_PARALLEL.md)
+- [PETScを使わない共有メモリ案・試作の性能と精度（本体移行前）](SHARED_MEMORY_PARALLEL_PLAN.md)
+- [MPI領域分割の基礎検証と必要な改修（本体対応前）](MPI_PARALLEL_PLAN.md)
 - [Poisson移行の結果・精度・性能](FIPY_POISSON_MIGRATION.md)
 - [FiPy輸送移行と格子共通化の履歴](FIPY_MIGRATION_PLAN.md)
 - [コード削減の設計案](CODE_REDUCTION_PROPOSAL.md)

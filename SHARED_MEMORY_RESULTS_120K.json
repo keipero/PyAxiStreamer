@@ -1,0 +1,139 @@
+{
+  "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+  "numpy": "2.5.4",
+  "scipy": "1.18.1",
+  "numba": "0.68.1",
+  "shape": [
+    400,
+    300
+  ],
+  "delta": 5e-06,
+  "steps": 10,
+  "repeats": 3,
+  "results": [
+    {
+      "mode": "fipy_scipy",
+      "numba_threads": 0,
+      "warmup_s": 19.45304940000642,
+      "samples_s": [
+        23.837859899998875,
+        22.55105030001141,
+        19.918267200002447
+      ],
+      "median_s": 22.55105030001141,
+      "max_scale_errors": {
+        "ne": 0.0,
+        "phi": 0.0,
+        "ex": 0.0,
+        "ey": 0.0,
+        "abs_e": 0.0,
+        "electron_losses": 0.0
+      }
+    },
+    {
+      "mode": "scipy_reuse",
+      "numba_threads": 0,
+      "warmup_s": 17.62723479999113,
+      "samples_s": [
+        13.462796800013166,
+        14.120781800011173,
+        15.37193219998153
+      ],
+      "median_s": 14.120781800011173,
+      "max_scale_errors": {
+        "ne": 1.0447345092028747e-13,
+        "phi": 3.007016857736744e-14,
+        "ex": 2.384699063287576e-13,
+        "ey": 1.0608844439188797e-13,
+        "abs_e": 1.0042351807922955e-13,
+        "electron_losses": 3.9874036346644475e-14
+      }
+    },
+    {
+      "mode": "numba_1",
+      "numba_threads": 1,
+      "warmup_s": 5.579099499998847,
+      "samples_s": [
+        4.457704700005706,
+        4.1881479999865405,
+        4.26824740000302
+      ],
+      "median_s": 4.26824740000302,
+      "max_scale_errors": {
+        "ne": 1.0879519439360872e-13,
+        "phi": 3.007016857736744e-14,
+        "ex": 2.384699063287576e-13,
+        "ey": 1.0608844439188797e-13,
+        "abs_e": 1.0042351807922955e-13,
+        "electron_losses": 3.9874036346644475e-14
+      }
+    },
+    {
+      "mode": "numba_2",
+      "numba_threads": 2,
+      "warmup_s": 4.532060700003058,
+      "samples_s": [
+        5.182816399988951,
+        5.950540699996054,
+        6.195252399978926
+      ],
+      "median_s": 5.950540699996054,
+      "max_scale_errors": {
+        "ne": 1.0879519439360872e-13,
+        "phi": 3.007016857736744e-14,
+        "ex": 2.384699063287576e-13,
+        "ey": 1.0608844439188797e-13,
+        "abs_e": 1.0042351807922955e-13,
+        "electron_losses": 3.9874036346644475e-14
+      }
+    },
+    {
+      "mode": "numba_4",
+      "numba_threads": 4,
+      "warmup_s": 7.36432719998993,
+      "samples_s": [
+        6.999365300027421,
+        5.851174199982779,
+        4.137553999986267
+      ],
+      "median_s": 5.851174199982779,
+      "max_scale_errors": {
+        "ne": 1.0879519439360872e-13,
+        "phi": 3.007016857736744e-14,
+        "ex": 2.384699063287576e-13,
+        "ey": 1.0608844439188797e-13,
+        "abs_e": 1.0042351807922955e-13,
+        "electron_losses": 3.9874036346644475e-14
+      }
+    },
+    {
+      "mode": "numba_8",
+      "numba_threads": 8,
+      "warmup_s": 6.137273500004085,
+      "samples_s": [
+        6.166038299998036,
+        5.352329999994254,
+        6.175336000014795
+      ],
+      "median_s": 6.166038299998036,
+      "max_scale_errors": {
+        "ne": 1.0879519439360872e-13,
+        "phi": 3.007016857736744e-14,
+        "ex": 2.384699063287576e-13,
+        "ey": 1.0608844439188797e-13,
+        "abs_e": 1.0042351807922955e-13,
+        "electron_losses": 3.9874036346644475e-14
+      }
+    }
+  ],
+  "threading_layer": "omp",
+  "petsc_loaded": false,
+  "mpi_loaded": false,
+  "execution_notes": {
+    "prototype_only": true,
+    "production_changed": false,
+    "optional_broken_mpi_disabled_in_launcher": true,
+    "environment": "env_pyaxistreamer (existing venv)",
+    "compared_to": "FiPy/SciPy in the same environment; not current PETSc performance"
+  }
+}
