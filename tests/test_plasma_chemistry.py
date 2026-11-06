@@ -10,7 +10,7 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
-from streamer_drift_diffusion.kinetics import DENSITY_NAMES, MECHANISM_PATH, export_mechanism
+from streamer_drift_diffusion.kinetics import DENSITY_NAMES, MECHANISM_PATH, SPECIES_FIELDS, export_mechanism
 from streamer_drift_diffusion.plasma_chemistry import LEGACY_EQUATIONS, load_reaction_table
 from streamer_drift_diffusion.reactions import apply_reactions, calculate_reaction_coefficients
 from streamer_drift_diffusion.simulation_types import molecular_density
@@ -87,13 +87,17 @@ class ChemistryTests(unittest.TestCase):
         assert_allclose(oxygen[gas], 4e20, rtol=1e-15)
         assert_array_equal(state.o[~gas], 0.)
 
-    def test_grid_run_records_table_and_saves_atomic_oxygen(self):
+    def test_grid_run_records_table_and_saves_species_densities(self):
         """通常の時間ループで係数表を使用し、出力へ由来を記録する。"""
         self.add_swarm_coefficients()
         state = run_simulation(self.config, output_dir=self.output, verbose=False)
         self.assertGreater(float(state.o.max()), 0.)
         assert_array_equal(state.o, state.om)
         assert_allclose(np.loadtxt(self.output/"O1.csv").reshape(state.o.shape), state.o, rtol=5e-7)
+        with np.load(self.output/"species1.npz", allow_pickle=False) as archive:
+            self.assertEqual(set(archive.files), set(SPECIES_FIELDS))
+            for species, field in SPECIES_FIELDS.items():
+                assert_array_equal(archive[species], getattr(state, field))
         report = json.loads((self.output/"run_config.json").read_text(encoding="utf-8"))
         self.assertEqual(report["chemistry_backend"], "py3bolos-cantera-table")
         self.assertEqual(report["electron_mobility_source"], "py3bolos-table")

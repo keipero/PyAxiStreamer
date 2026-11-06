@@ -73,6 +73,11 @@ def validate_config(config):
         validate_impulse_parameters(config)
     from .timestepping import validate_time_config
     validate_time_config(config)
+    efficiency = config.photoionization_efficiency
+    if not isinstance(efficiency, Real) or isinstance(efficiency, bool) or not 0. <= efficiency <= 1.:
+        raise ValueError("photoionization_efficiency must be in [0, 1]")
+    if config.photoionization and min(config.nitrogen_fraction, config.oxygen_fraction) <= 0.:
+        raise ValueError("Helmholtz photoionization requires both N2 and O2")
 
 
 def initialize_simulation(config=None):
@@ -128,6 +133,10 @@ def initialize_simulation(config=None):
     arrays['radial_boundary'] = arrays['poisson'].radial_boundary
     arrays['upper_boundary'] = arrays['poisson'].upper_boundary
     arrays['chemistry'] = None
+    arrays['photoionization'] = None
+    if config.photoionization:
+        from .photoionization import PhotoionizationSolver
+        arrays['photoionization'] = PhotoionizationSolver(arrays['grid'], arrays['gas_mask'], config)
     arrays['k1_o2'] = None
     if config.chemistry_table is not None:
         from .plasma_chemistry import load_reaction_table

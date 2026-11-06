@@ -34,7 +34,7 @@ def prepare_step(state, config, time, *, waveform=None, verbose=True):
     Returns
     -------
     None
-        rho、phi、電場・速度・反応係数をその場で更新する。
+        rho、phi、電場・速度・反応係数と有効時の光電離源をその場で更新する。
 
     Raises
     ------
@@ -72,6 +72,10 @@ def prepare_step(state, config, time, *, waveform=None, verbose=True):
         calculate_electric_field(state, config, voltage=voltage)
         calculate_transport_coefficients(state, config)
         calculate_reaction_coefficients(state)
+        if state.photoionization is not None:
+            k_o2 = state.k1 if state.k1_o2 is None else state.k1_o2
+            impact = state.ne * (state.k1 * state.n2 + k_o2 * state.o2)
+            state.photoionization.solve(impact)
     for name in ("rho", "phi", "ex", "ey", "abs_e", "vex", "vey", "k1", "k1_o2", "k2", "k3"):
         values = getattr(state, name)
         if values is not None and not np.all(np.isfinite(values)):
@@ -148,7 +152,9 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
     適応刻みだけが失敗した更新を復元・半減・再試行する。
     無出力でも同じイベントで刻みを分割するため、保存の有無で積分経路は変わらない。
     背景加算量はbackground_ionization * actual_dt / config.dt。
-    成功・失敗とも終了時にPoissonのLU分解を解放する。返した状態の電位・行列は保持する。
+    光電離源は受理済み密度で評価し、次の更新と再試行に共用する。
+    成功・失敗とも終了時にPoissonと光電離のLU分解を解放する。
+    返した状態では電位、Poisson行列、直近の光電離源を保持する。
 
     Examples
     --------
@@ -237,4 +243,6 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
             raise TimestepError(f"simulation stopped at t={time:.9e}, step={step}: {exc}") from exc
         finally:
             state.poisson.close()
+            if state.photoionization is not None:
+                state.photoionization.close()
     return state

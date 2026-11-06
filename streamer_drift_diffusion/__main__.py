@@ -49,6 +49,9 @@ def main(argv=None):
     parser.add_argument("--electron-diffusion", type=float, default=defaults.electron_diffusion,
                         help="Constant coefficient [m^2/s] for tables without BOLOS transport or empirical mode")
     parser.add_argument("--chemistry-table", help="JSON electron transport and reaction coefficients")
+    parser.add_argument("--photoionization", action="store_true", help="Enable three-term Helmholtz photoionization")
+    parser.add_argument("--photoionization-efficiency", type=float, default=defaults.photoionization_efficiency,
+                        help="Photon production factor before collisional quenching")
     parser.add_argument("--no-output", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--adaptive-timestep", action="store_true", default=defaults.adaptive_timestep, help="Use adaptive explicit timesteps")
@@ -70,6 +73,7 @@ def main(argv=None):
         voltage_waveform_file=args.waveform, nr=args.nr, nz=args.nz,
         electrode_gap=args.electrode_gap, delta=args.delta,
         electron_diffusion=args.electron_diffusion, chemistry_table=args.chemistry_table,
+        photoionization=args.photoionization, photoionization_efficiency=args.photoionization_efficiency,
         poisson_tolerance=args.poisson_tolerance,
         adaptive_timestep=args.adaptive_timestep, t_end=args.t_end, dt=args.dt,
         dt_max=args.dt_max, dt_min=args.dt_min, dt_safety_factor=args.dt_safety_factor,

@@ -9,6 +9,8 @@ import numpy as np
 import fipy
 import scipy
 
+from .kinetics import SPECIES_FIELDS
+
 
 
 def write_c_values(path, values):
@@ -172,6 +174,10 @@ def write_step_output(output_dir, step, state):
     CSVはC順序で1値1行、指数表記の小数点以下6桁、ASCII・LF改行。
     既存の同名ファイルは上書きする。座標・時刻表はこの関数では保存しない。
     面の電場・速度は混在させず、電場・密度を揃える処理は呼出側が担当する。
+    係数表を使う計算では、中性OのCSVに加え、全化学種の数密度を
+    species{step}.npzに保存する。キーはCanteraの化学種名で、
+    配列は形状(nr, nz)、単位はm^-3。
+    光電離が有効な場合は同時刻の生成源Sph{step}.csv [m^-3 s^-1]も保存する。
 
     Examples
     --------
@@ -192,6 +198,12 @@ def write_step_output(output_dir, step, state):
         write_c_matrix(Path(output_dir) / f"{name}{step}.csv", values)
     if state.chemistry is not None:
         write_c_matrix(Path(output_dir) / f"O{step}.csv", state.o)
+        np.savez_compressed(
+            Path(output_dir) / f"species{step}.npz",
+            **{species: getattr(state, field) for species, field in SPECIES_FIELDS.items()},
+        )
+    if state.photoionization is not None:
+        write_c_matrix(Path(output_dir) / f"Sph{step}.csv", state.photoionization.rate)
 
 
 class SimulationOutput:
@@ -333,6 +345,7 @@ class SimulationOutput:
                         "electron_mobility_source": "py3bolos-table" if use_swarm else "empirical",
                         "electron_diffusion_source": "py3bolos-table" if use_swarm else "constant verification coefficient",
                         "chemistry_backend": "empirical" if chemistry is None else "py3bolos-cantera-table",
+                        "photoionization_model": "bourdon-2007-helmholtz-3" if self.config.photoionization else None,
                         "chemistry_table_metadata": None if chemistry is None else {
                             **chemistry.metadata, "max_field_td": float(chemistry.field_td[-1]),
                         },
