@@ -127,6 +127,12 @@ def initialize_simulation(config=None):
     arrays['ne_var'] = CellVariable(mesh=arrays['grid'].mesh, value=0., hasOld=True)
     arrays['radial_boundary'] = arrays['poisson'].radial_boundary
     arrays['upper_boundary'] = arrays['poisson'].upper_boundary
+    arrays['chemistry'] = None
+    arrays['k1_o2'] = None
+    if config.chemistry_table is not None:
+        from .plasma_chemistry import load_reaction_table
+        arrays['chemistry'] = load_reaction_table(config.chemistry_table, config)
+        arrays['k1_o2'] = np.zeros(arrays['gas_mask'].shape)
     for field in fields(SimulationState):
         if field.name not in arrays:
             arrays[field.name] = np.zeros((config.nr, config.nz), dtype=np.float64)

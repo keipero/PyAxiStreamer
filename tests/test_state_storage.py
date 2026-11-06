@@ -125,6 +125,7 @@ class StateStorageTests(unittest.TestCase):
             """
             current.ne_var.setValue(-5.)
             current.o2[:] = -1.
+            current.o[:] = 7.
             _ = expression.value.copy()
             raise TimestepError('reaction failure')
 

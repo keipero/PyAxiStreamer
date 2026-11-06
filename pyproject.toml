@@ -19,4 +19,4 @@ streamer-python = "streamer_drift_diffusion.__main__:main"
 include = ["streamer_drift_diffusion*"]
 
 [tool.setuptools.package-data]
-streamer_drift_diffusion = ["data/*.txt"]
+streamer_drift_diffusion = ["data/*.txt", "data/*.yaml"]

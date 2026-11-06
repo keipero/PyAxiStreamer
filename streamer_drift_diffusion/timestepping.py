@@ -3,9 +3,8 @@ from dataclasses import dataclass
 import math
 
 import numpy as np
+from .kinetics import DENSITY_NAMES
 from .transport import ElectronTransport
-
-DENSITY_NAMES = ("ne", "n2", "o2", "n2p", "o2p", "om", "o2m")
 
 
 @dataclass(frozen=True)
@@ -130,7 +129,7 @@ def validate_time_config(config):
 
 
 def validate_densities(state):
-    """全7密度の有限性・非負性と電極内のゼロ条件を検査する。
+    """全粒子密度の有限性・非負性と電極内のゼロ条件を検査する。
 
     Parameters
     ----------
@@ -228,6 +227,7 @@ def chemistry_limit(state, config):
     -----
     電子の生成・消費、中性粒子の消費を指定割合以下に抑える。
     生成と消費の相殺は使わず、気体セルだけを評価する。反応が全て0ならmath.inf。
+    Canteraの反応機構を含む係数表では、密度更新と同じ反応次数と化学量論を使う。
 
     Examples
     --------
@@ -238,9 +238,15 @@ def chemistry_limit(state, config):
     >>> chemistry_limit(state, config)
     inf
     """
-    electron_rate = state.k1 * (state.n2 + state.o2) + state.k2 * state.o2 + state.k3 * state.o2**2
+    if state.chemistry is not None and state.chemistry.mechanism is not None:
+        maximum = state.chemistry.mechanism.maximum_frequency(state)
+        return config.dt_chemistry_fraction / maximum if maximum > 0 else math.inf
+    k_o2 = state.k1 if state.k1_o2 is None else state.k1_o2
+    ionization = (state.k1*(state.n2 + state.o2) if state.k1_o2 is None
+                  else state.k1*state.n2 + k_o2*state.o2)
+    electron_rate = ionization + state.k2 * state.o2 + state.k3 * state.o2**2
     nitrogen_rate = state.k1 * state.ne
-    oxygen_rate = (state.k1 + state.k2 + state.k3 * state.o2) * state.ne
+    oxygen_rate = (k_o2 + state.k2 + state.k3 * state.o2) * state.ne
     maximum = max(float(np.max(x[state.gas_mask])) for x in (electron_rate, nitrogen_rate, oxygen_rate))
     return config.dt_chemistry_fraction / maximum if maximum > 0 else math.inf
 
@@ -346,11 +352,11 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
 
     Notes
     -----
-    開始時の7密度を退避し、輸送後・反応後の非負性と物理制約を検査する。
+    開始時の全密度を退避し、輸送後・反応後の非負性と物理制約を検査する。
     固定は失敗時に復元して停止、適応だけが半減・再試行する。
     流出数は受理時にだけ累積し、試行中に電場・係数は再計算しない。
     電子密度はstate.ne_varと輸送が同じ正本を参照する。各試行でFiPy旧値を更新し、
-    棄却時はne_var.setValue()で復元する。他の6密度も復元し、派生式のキャッシュも整合させる。
+    棄却時はne_var.setValue()で復元する。他の密度も復元し、派生式のキャッシュも整合させる。
     この関数は時刻を進めない。更新後の電場準備は呼出側で行う。
 
     Examples
