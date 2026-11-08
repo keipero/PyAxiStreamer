@@ -202,8 +202,7 @@ def write_step_output(output_dir, step, state):
             Path(output_dir) / f"species{step}.npz",
             **{species: getattr(state, field) for species, field in SPECIES_FIELDS.items()},
         )
-    if state.photoionization is not None:
-        write_c_matrix(Path(output_dir) / f"Sph{step}.csv", state.photoionization.rate)
+    write_c_matrix(Path(output_dir) / f"Sph{step}.csv", state.photoionization.rate)
 
 
 class SimulationOutput:
@@ -345,7 +344,7 @@ class SimulationOutput:
                         "electron_mobility_source": "py3bolos-table" if use_swarm else "empirical",
                         "electron_diffusion_source": "py3bolos-table" if use_swarm else "constant verification coefficient",
                         "chemistry_backend": "empirical" if chemistry is None else "py3bolos-cantera-table",
-                        "photoionization_model": "bourdon-2007-helmholtz-3" if self.config.photoionization else None,
+                        "photoionization_model": "bourdon-2007-helmholtz-3",
                         "chemistry_table_metadata": None if chemistry is None else {
                             **chemistry.metadata, "max_field_td": float(chemistry.field_td[-1]),
                         },

@@ -38,7 +38,7 @@ class PhotoionizationSolver:
     Examples
     --------
     >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
-    >>> state = initialize_simulation(SimulationConfig(nr=2, nz=3, photoionization=True))
+    >>> state = initialize_simulation(SimulationConfig(nr=2, nz=3))
     >>> state.photoionization.solve(np.zeros(state.grid.shape)).max().item()
     0.0
     """

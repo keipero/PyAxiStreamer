@@ -228,7 +228,7 @@ def chemistry_limit(state, config):
     電子の生成・消費、中性粒子の消費を指定割合以下に抑える。
     生成と消費の相殺は使わず、気体セルだけを評価する。反応が全て0ならmath.inf。
     Canteraの反応機構を含む係数表では、密度更新と同じ反応次数と化学量論を使う。
-    光電離が有効なら、O₂の追加消費を既存の制約に安全側で加算する。
+    光電離によるO₂の追加消費を既存の制約に安全側で加算する。
 
     Examples
     --------
@@ -249,14 +249,13 @@ def chemistry_limit(state, config):
         nitrogen_rate = state.k1 * state.ne
         oxygen_rate = (k_o2 + state.k2 + state.k3 * state.o2) * state.ne
         maximum = max(float(np.max(x[state.gas_mask])) for x in (electron_rate, nitrogen_rate, oxygen_rate))
-    if state.photoionization is not None:
-        rate = state.photoionization.rate
-        active = rate > 0.
-        if np.any(active):
-            oxygen = state.o2[active]
-            if np.any(oxygen <= 0.):
-                return 0.
-            maximum += float(np.max(rate[active] / oxygen))
+    rate = state.photoionization.rate
+    active = rate > 0.
+    if np.any(active):
+        oxygen = state.o2[active]
+        if np.any(oxygen <= 0.):
+            return 0.
+        maximum += float(np.max(rate[active] / oxygen))
     return config.dt_chemistry_fraction / maximum if maximum > 0 else math.inf
 
 

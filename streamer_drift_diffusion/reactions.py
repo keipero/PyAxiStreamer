@@ -142,11 +142,10 @@ def apply_reactions(state, config, *, dt):
         r3 = dt * state.k3 * state.o2 * state.o2 * state.ne
         increments = r1n + r1o - r2 - r3, -r1n, -r1o - r2 - r3, r1n, r1o, r2, r3, r2
     ne, n2, o2, n2p, o2p, om, o2m, o = increments
-    if state.photoionization is not None:
-        photo = dt * state.photoionization.rate
-        ne = ne + photo
-        o2 = o2 - photo
-        o2p = o2p + photo
+    photo = dt * state.photoionization.rate
+    ne = ne + photo
+    o2 = o2 - photo
+    o2p = o2p + photo
     state.ne_var.setValue((state.ne + (ne + background)).ravel(order='F'))
     state.n2[:] += n2
     state.o2[:] += o2

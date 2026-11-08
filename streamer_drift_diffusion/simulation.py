@@ -72,10 +72,9 @@ def prepare_step(state, config, time, *, waveform=None, verbose=True):
         calculate_electric_field(state, config, voltage=voltage)
         calculate_transport_coefficients(state, config)
         calculate_reaction_coefficients(state)
-        if state.photoionization is not None:
-            k_o2 = state.k1 if state.k1_o2 is None else state.k1_o2
-            impact = state.ne * (state.k1 * state.n2 + k_o2 * state.o2)
-            state.photoionization.solve(impact)
+        k_o2 = state.k1 if state.k1_o2 is None else state.k1_o2
+        impact = state.ne * (state.k1 * state.n2 + k_o2 * state.o2)
+        state.photoionization.solve(impact)
     for name in ("rho", "phi", "ex", "ey", "abs_e", "vex", "vey", "k1", "k1_o2", "k2", "k3"):
         values = getattr(state, name)
         if values is not None and not np.all(np.isfinite(values)):
@@ -243,6 +242,5 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
             raise TimestepError(f"simulation stopped at t={time:.9e}, step={step}: {exc}") from exc
         finally:
             state.poisson.close()
-            if state.photoionization is not None:
-                state.photoionization.close()
+            state.photoionization.close()
     return state

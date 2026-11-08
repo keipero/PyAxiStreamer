@@ -98,10 +98,8 @@ class SimulationConfig:
     chemistry_table : str or pathlib.Path or None, optional
         Py3BOLOSとCanteraで生成した電子輸送・反応係数表。Noneなら従来の経験式。
 
-    photoionization : bool, optional
-        乾燥N₂/O₂の3項Helmholtz光電離を有効にする。既定False。
     photoionization_efficiency : float, optional
-        発光源の無次元係数。消光補正前の値で、既定0.075。
+        発光源の無次元係数。消光補正前の値で、範囲は(0, 1]、既定0.075。
 
     Notes
     -----
@@ -155,7 +153,6 @@ class SimulationConfig:
     electrode_gap: float = 1e-3 # 接地平面z=0から電極先端までの距離[m]。領域寸法とは独立。
     electron_diffusion: float = 0.0 # 従来モード用の一定電子拡散係数 [m²/s]。
     chemistry_table: str | Path | None = None
-    photoionization: bool = False
     photoionization_efficiency: float = 0.075
 
 
@@ -303,8 +300,8 @@ class SimulationState:
         正本の値をFortran順に変形した2次元ビュー。独立した値は保持しない。
         neは電子密度 [m⁻³]、phiは総電位 [V]。独立した退避値にはcopy()を使う。
 
-    photoionization : PhotoionizationSolver or None
-        共有格子で光電離源を求めるソルバ。光電離を無効にした場合はNone。
+    photoionization : PhotoionizationSolver
+        共有格子で3項Helmholtz近似の光電離源を求めるソルバ。
 
     Notes
     -----
@@ -369,7 +366,7 @@ class SimulationState:
     o: np.ndarray
     k1_o2: np.ndarray | None
     chemistry: "ReactionTable | None"
-    photoionization: "PhotoionizationSolver | None" = None
+    photoionization: "PhotoionizationSolver"
 
     @property
     def ne(self):

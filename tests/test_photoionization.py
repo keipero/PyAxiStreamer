@@ -19,7 +19,7 @@ class PhotoionizationTests(unittest.TestCase):
 
     def test_point_source_matches_far_field_kernel_and_reuses_factors(self):
         """開放境界から離れた軸上で3項Green関数と比較する。"""
-        config = SimulationConfig(nr=80, nz=160, delta=1e-4, photoionization=True)
+        config = SimulationConfig(nr=80, nz=160, delta=1e-4)
         grid = CylindricalGrid(config)
         solver = PhotoionizationSolver(grid, np.ones(grid.shape, dtype=bool), config)
         impact = np.zeros(grid.shape)
@@ -43,13 +43,11 @@ class PhotoionizationTests(unittest.TestCase):
     def test_nonlocal_source_conserves_oxygen_and_charge(self):
         """電子衝突項をゼロにして光電離だけの粒子更新を確認する。"""
         config = SimulationConfig(nr=8, nz=12, delta=1e-4, electrode_gap=5.5e-4,
-                                  cathode_radius=2.5e-4, nmax=0., background_ionization=0.,
-                                  photoionization=True)
+                                  cathode_radius=2.5e-4, nmax=0., background_ionization=0.)
         state = initialize_simulation(config)
         impact = np.zeros(state.grid.shape)
         impact[0, 2] = 1e35
         solver = state.photoionization
-        assert solver is not None
         rate, components = solver.solve(impact, return_components=True)
         self.assertGreater(rate[0, 1], 0.)
         self.assertTrue((~state.gas_mask).any())
@@ -68,11 +66,10 @@ class PhotoionizationTests(unittest.TestCase):
         """通常の適応刻みループで源を作り、同時刻のCSVに書く。"""
         config = SimulationConfig(nr=8, nz=12, delta=1e-4, electrode_gap=5.5e-4,
                                   cathode_radius=2.5e-4, z0=4e-4, voltage=500.,
-                                  photoionization=True, adaptive_timestep=True, t_end=3e-12)
+                                  adaptive_timestep=True, t_end=3e-12)
         with TemporaryDirectory() as folder:
             state = run_simulation(config, output_dir=folder, verbose=False)
             solver = state.photoionization
-            assert solver is not None
             self.assertGreater(float(solver.rate.max()), 0.)
             self.assertEqual(solver._factors, ())
             output = Path(folder)
