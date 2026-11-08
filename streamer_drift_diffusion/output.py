@@ -335,6 +335,7 @@ class SimulationOutput:
                         "poisson_factorization_reused": True,
                         "poisson_criterion": "max_abs(A*phi-b) / max_abs(b)",
                         "transport_backend": "fipy", "transport_time_scheme": "explicit Euler",
+                        "transport_advection_scheme": "van Leer",
                         "fipy_version": fipy.__version__, "scipy_version": scipy.__version__,
                         "fipy_solver_suite": fipy.solvers.solver_suite,
                         "transport_boundary": "half-cell absorption sink; no inflow",

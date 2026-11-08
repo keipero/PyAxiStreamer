@@ -131,7 +131,8 @@ class DiffusionTests(unittest.TestCase):
     def test_combined_limit_is_needed_for_simultaneous_update(self):
         config = self.config(nr=3, nz=3, delta=1., electrode_gap=10., electron_diffusion=1.)
         state = initialize_simulation(config)
-        state.vex[:] = state.vey[:] = 3.
+        # 上端からの流出は一次上流。再構築用の安全余裕と切り離す。
+        state.vey[-1, -1] = 10.
         state.de[:] = 0.
         transport = ElectronTransport(state, config.delta).prepare(state)
         drift_bound = config.dt_cfl_number*transport.transport_limit
@@ -212,6 +213,7 @@ class DiffusionTests(unittest.TestCase):
             self.assertEqual(metadata['config']['electron_diffusion'], .5)
             self.assertEqual(metadata['transport_backend'], 'fipy')
             self.assertEqual(metadata['transport_time_scheme'], 'explicit Euler')
+            self.assertEqual(metadata['transport_advection_scheme'], 'van Leer')
             self.assertIn('fipy_version', metadata)
             self.assertIn('fipy_solver_suite', metadata)
             with (Path(directory)/'timestep_history.csv').open() as history:

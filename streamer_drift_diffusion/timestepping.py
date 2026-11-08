@@ -387,7 +387,7 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
     for retries in range(max_retries + 1):
         try:
             with np.errstate(over="raise", invalid="raise", divide="raise"):
-                if np.any(state.de) and dt > transport.transport_limit * (1+1e-12):
+                if dt > transport.transport_limit * (1+1e-12):
                     raise TimestepError("explicit drift-diffusion constraint")
                 losses = transport.step(state, dt, prepared=True)
                 validate_densities(state)

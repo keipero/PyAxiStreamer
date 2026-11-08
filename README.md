@@ -80,7 +80,9 @@ python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-outp
 
 ### 電子輸送と反応
 
-`ElectronTransport`は同じメッシュ上で一次上流移流と拡散を陽的Eulerで同時更新します。
+`ElectronTransport`は同じメッシュ上でFiPyのVan Leer移流項と陽的拡散項を使います。
+気体セル間では、電極・外端近傍の勾配を気体側の片側差分で求め、軸近傍の半径方向勾配には軸対称性を反映します。
+移流の再構築面密度は旧セル密度の0～2倍に制限し、合算CFL上限にはこの流出上界を使います。
 気体間のDは調和平均、電極・外部境界は気体側Dと半セル距離で吸収します。外からの流入・電子放出は含めません。
 流出数は`[電極, 接地面, 上端＋外周]`の3区分です。輸送の損失項と同じ係数・旧密度から集計し、受理した更新だけ累積します。
 単独で更新する場合は`transport = ElectronTransport(state, config.delta)`を一度作り、`losses = transport.step(state, dt)`を呼びます。

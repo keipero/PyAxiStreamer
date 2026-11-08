@@ -57,7 +57,8 @@ class SimulationTests(unittest.TestCase):
         state.ne[:] = [[1., 2.], [3., 4.]]
         state.vey[:] = [1., 2., 2.]
         losses = ElectronTransport(state, config.delta).step(state, .1)
-        assert_allclose(state.ne, [[.8, 1.8], [2.4, 3.8]])
+        # セル間面は片側勾配1とCFL 0.2で面密度を0.4補正する。
+        assert_allclose(state.ne, [[.72, 1.88], [2.32, 3.88]])
         self.assertAlmostEqual(losses.sum(), 1.4 * 2*np.pi)
 
     def test_transport_outer_boundary(self):
@@ -65,8 +66,10 @@ class SimulationTests(unittest.TestCase):
         state = initialize_simulation(config)
         state.ne[:] = [[1., 2.], [3., 4.]]
         state.vex[:] = [[0., 0.], [2., 2.], [2., 2.]]
-        ElectronTransport(state, config.delta).step(state, .1)
-        assert_allclose(state.ne, [[.6, 1.2], [7/3, 3.2]])
+        losses = ElectronTransport(state, config.delta).step(state, .1)
+        # 軸側の勾配は1。内部面の補正は0.5 * (0.5 - 0.2)。
+        assert_allclose(state.ne, [[.54, 1.14], [7/3 + .02, 3.22]])
+        self.assertAlmostEqual(losses.sum(), 2.8 * 2*np.pi)
 
     def test_reaction_charge_conservation_and_background(self):
         config = self.small_config()
