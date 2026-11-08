@@ -90,18 +90,22 @@ class PhotoionizationSolver:
             format="csc",
         )) for kappa in self._absorption)
 
-    def solve(self, impact):
+    def solve(self, impact, *, return_components=False):
         """電子衝突電離源から光電離源を更新する。
 
         Parameters
         ----------
         impact : ndarray
             N₂・O₂の電子衝突電離の和 [m^-3 s^-1]。形状はgrid.shape。
+        return_components : bool, optional
+            Trueなら検証用に3項の分布を個別に返す。既定False。
 
         Returns
         -------
-        ndarray
-            更新したrateへの参照。
+        ndarray or tuple of ndarray
+            更新したrateへの参照。return_components=Trueでは
+            (rate, components)を返す。componentsの形状は(3, nr, nz)で、
+            Bourdonの表2の順。単位はいずれも[m^-3 s^-1]。
 
         Raises
         ------
@@ -117,6 +121,7 @@ class PhotoionizationSolver:
             impact = np.zeros(state.grid.shape)
             impact[0, 0] = 1e24
             rate = state.photoionization.solve(impact)
+            rate, components = state.photoionization.solve(impact, return_components=True)
         """
         if impact.shape != self.rate.shape:
             raise ValueError("impact ionization source shape does not match the grid")
@@ -125,15 +130,25 @@ class PhotoionizationSolver:
             raise RuntimeError("invalid impact ionization source for photoionization")
         if not self._yield or not np.any(source):
             self.rate.fill(0.)
+            if return_components:
+                return self.rate, np.zeros((len(self._weights), *self.rate.shape))
             return self.rate
         if not self._factors:
             self._factors = self._factorize()
         rhs = self._yield * self._volume * source
-        values = sum(weight * factor.solve(rhs)
-                     for weight, factor in zip(self._weights, self._factors))
+        terms = (weight * factor.solve(rhs)
+                 for weight, factor in zip(self._weights, self._factors))
+        if return_components:
+            terms = tuple(terms)
+        values = sum(terms)
         if not np.all(np.isfinite(values)) or np.any(values < 0):
             raise RuntimeError("invalid Helmholtz photoionization solution")
         self.rate.ravel(order="F")[self._mask] = values
+        if return_components:
+            components = np.zeros((len(self._weights), *self.rate.shape))
+            for component, term in zip(components, terms):
+                component.T[self._gas.T] = term
+            return self.rate, components
         return self.rate
 
     def close(self):

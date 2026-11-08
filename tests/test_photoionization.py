@@ -50,10 +50,12 @@ class PhotoionizationTests(unittest.TestCase):
         impact[0, 2] = 1e35
         solver = state.photoionization
         assert solver is not None
-        rate = solver.solve(impact)
+        rate, components = solver.solve(impact, return_components=True)
         self.assertGreater(rate[0, 1], 0.)
         self.assertTrue((~state.gas_mask).any())
         assert_array_equal(rate[~state.gas_mask], 0.)
+        assert_array_equal(components[:, ~state.gas_mask], 0.)
+        assert_allclose(components.sum(axis=0), rate, rtol=1e-14)
         dt = chemistry_limit(state, config) / 2
         self.assertTrue(np.isfinite(dt) and dt > 0)
         oxygen = state.o2.copy()
