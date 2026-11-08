@@ -43,6 +43,9 @@ def calculate_reaction_coefficients(state):
     (0.0, 0.0, 0.0)
     """
     table = state.chemistry
+    if state.reaction_rates is not None:
+        state.reaction_rates[:, state.gas_mask] = table.sample(state.abs_e[state.gas_mask])
+        return
     if table is not None:
         rates = table.sample(state.abs_e[state.gas_mask])
         for target, rate in zip((state.k1, state.k1_o2, state.k2), rates):
@@ -110,6 +113,8 @@ def apply_reactions(state, config, *, dt):
     背景電離は実際のdtに比例する密度を電子へ加え、正イオンへ組成比で
     分配する。中性粒子の減少は適用しない。両組成比の和が1の場合、
     背景項による電子と正イオンの生成電荷は相殺する。
+    光電離が有効なら、準備済みのS_phにdtを掛け、O₂を消費して
+    電子とO₂⁺を同数生成する。
 
     共通のadvance_density()から、輸送後の電子密度に適用する。
     反応係数の再計算、電荷源・電位・電場の更新、
@@ -139,7 +144,11 @@ def apply_reactions(state, config, *, dt):
         r2 = dt * state.k2 * state.o2 * state.ne
         r3 = dt * state.k3 * state.o2 * state.o2 * state.ne
         increments = r1n + r1o - r2 - r3, -r1n, -r1o - r2 - r3, r1n, r1o, r2, r3, r2
-    ne, n2, o2, n2p, o2p, om, o2m, o = increments
+    ne, n2, o2, n2p, o2p, om, o2m, o, *extra = increments
+    photo = dt * state.photoionization.rate
+    ne = ne + photo
+    o2 = o2 - photo
+    o2p = o2p + photo
     state.ne_var.setValue((state.ne + (ne + background)).ravel(order='F'))
     state.n2[:] += n2
     state.o2[:] += o2
@@ -148,3 +157,5 @@ def apply_reactions(state, config, *, dt):
     state.om[:] += om
     state.o2m[:] += o2m
     state.o[:] += o
+    if extra:
+        state.n2o[:] += extra[0]

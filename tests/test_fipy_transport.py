@@ -8,7 +8,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
 from streamer_drift_diffusion.reactions import apply_reactions
-from streamer_drift_diffusion.timestepping import advance_density, timestep_limits
+from streamer_drift_diffusion.timestepping import TimestepError, advance_density, timestep_limits
 from streamer_drift_diffusion.transport import ElectronTransport
 
 
@@ -19,8 +19,8 @@ def gas_state(nr=3, nz=4, spacing=1.):
 
 
 class FiPyTransportTests(unittest.TestCase):
-    def test_prepared_limits_match_diagonal_of_actual_fipy_update(self):
-        """孤立した単位密度の減少率から、合算・純拡散CFLを独立に検査する。"""
+    def test_prepared_limits_bound_actual_fipy_update(self):
+        """合算CFLの上界と純拡散CFLの対角を、単位密度から検査する。"""
         state = gas_state()
         state.gas_mask[1, 2] = False
         rng = np.random.default_rng(92)
@@ -43,9 +43,69 @@ class FiPyTransportTests(unittest.TestCase):
                     diagonal.append((1.-state.ne[index])/dt)
                     final = 2*np.pi*np.sum(state.ne*state.volume)
                     self.assertAlmostEqual((final+losses.sum())/initial, 1., places=13)
-                self.assertAlmostEqual(operator.transport_limit*max(diagonal), 1., places=13)
-                if not mixed:
+                ratio = operator.transport_limit*max(diagonal)
+                if mixed:
+                    self.assertLess(ratio, 1.)
+                    self.assertGreaterEqual(ratio, .5)
+                else:
+                    self.assertAlmostEqual(ratio, 1., places=13)
                     self.assertEqual(operator.transport_limit, operator.diffusion_limit)
+
+    def test_van_leer_axial_flux_uses_gas_slope_next_to_electrode(self):
+        """電極隣接セルも気体側の線形勾配で再構築する。"""
+        for electrode in (False, True):
+            with self.subTest(electrode=electrode):
+                state = gas_state(3, 5)
+                state.ne[1] = [1., 2., 3., 4., 5.]
+                if electrode:
+                    state.gas_mask[1, 1] = False
+                    state.ne[1, 1] = 0.
+                state.vey[1, 3] = 1.
+                losses = ElectronTransport(state, 1.).step(state, .2)
+                # 気体内の勾配は1。面値は3 + (1 - CFL)/2。
+                transfer = .2 * 3.4
+                assert_allclose(state.ne[1, 2:4], [3. - transfer, 4. + transfer],
+                                rtol=1e-14)
+                assert_array_equal(losses, 0.)
+
+    def test_van_leer_uses_axis_symmetry_on_first_radial_face(self):
+        state = gas_state()
+        state.ne[:, 1] = [1., 2., 4.]
+        state.vex[1, 1] = 1.
+        losses = ElectronTransport(state, 1.).step(state, .2)
+        # r=0.5での勾配は0.5、セル体積0.5、面積1、面速度1。
+        transfer = .2 * (1. + .5*.5*(.5 - .2))
+        assert_allclose(state.ne[:2, 1], [1. - transfer/.5, 2. + transfer/1.5],
+                        rtol=1e-14)
+        assert_array_equal(losses, 0.)
+
+    def test_radial_transport_near_cfl_keeps_density_and_particle_balance(self):
+        state = gas_state(5, 5)
+        state.gas_mask[3, 2] = False
+        state.ne[:] = np.array([100., 1., .01, 0., 0.])[:, None]
+        state.vex[1:3] = -1.
+        state.vey[:, -1] = .25
+        state.de[:] = .01
+        operator = ElectronTransport(state, 1.).prepare(state)
+        initial = 2*np.pi*np.sum(state.ne*state.volume)
+        losses = operator.step(state, .99*operator.transport_limit, prepared=True)
+        self.assertTrue(np.all(state.ne >= 0.))
+        self.assertGreater(losses.sum(), 0.)
+        final = 2*np.pi*np.sum(state.ne*state.volume)
+        assert_allclose(final + losses.sum(), initial, rtol=1e-14)
+
+    def test_fixed_trial_rejects_unsafe_pure_advection_step(self):
+        config = SimulationConfig(nr=3, nz=5, delta=1., electrode_gap=100.,
+                                  voltage=0., adaptive_timestep=False)
+        state = initialize_simulation(config)
+        state.ne[:] = 1.
+        state.vey[:, 2] = 1.
+        operator = ElectronTransport(state, 1.).prepare(state)
+        with self.assertRaisesRegex(TimestepError, "explicit drift-diffusion constraint"):
+            advance_density(state, config, 1.1*operator.transport_limit,
+                            transport=operator, prepared=True)
+        assert_array_equal(state.ne, 1.)
+        assert_array_equal(state.electron_losses, 0.)
 
     def test_cfl_and_retried_transport_share_one_preparation(self):
         """CFL評価後の棄却・再試行でも、同じ係数と復元した旧密度を使う。"""

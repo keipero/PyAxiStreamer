@@ -9,6 +9,8 @@ import numpy as np
 import fipy
 import scipy
 
+from .kinetics import DRY_AIR_SPECIES_FIELDS, SPECIES_FIELDS
+
 
 
 def write_c_values(path, values):
@@ -172,6 +174,10 @@ def write_step_output(output_dir, step, state):
     CSVはC順序で1値1行、指数表記の小数点以下6桁、ASCII・LF改行。
     既存の同名ファイルは上書きする。座標・時刻表はこの関数では保存しない。
     面の電場・速度は混在させず、電場・密度を揃える処理は呼出側が担当する。
+    係数表を使う計算では、中性OのCSVに加え、全化学種の数密度を
+    species{step}.npzに保存する。キーはCanteraの化学種名で、
+    配列は形状(nr, nz)、単位はm^-3。
+    光電離が有効な場合は同時刻の生成源Sph{step}.csv [m^-3 s^-1]も保存する。
 
     Examples
     --------
@@ -192,6 +198,12 @@ def write_step_output(output_dir, step, state):
         write_c_matrix(Path(output_dir) / f"{name}{step}.csv", values)
     if state.chemistry is not None:
         write_c_matrix(Path(output_dir) / f"O{step}.csv", state.o)
+        np.savez_compressed(
+            Path(output_dir) / f"species{step}.npz",
+            **{species: getattr(state, field) for species, field in (
+                DRY_AIR_SPECIES_FIELDS if state.reaction_rates is not None else SPECIES_FIELDS).items()},
+        )
+    write_c_matrix(Path(output_dir) / f"Sph{step}.csv", state.photoionization.rate)
 
 
 class SimulationOutput:
@@ -324,6 +336,7 @@ class SimulationOutput:
                         "poisson_factorization_reused": True,
                         "poisson_criterion": "max_abs(A*phi-b) / max_abs(b)",
                         "transport_backend": "fipy", "transport_time_scheme": "explicit Euler",
+                        "transport_advection_scheme": "van Leer",
                         "fipy_version": fipy.__version__, "scipy_version": scipy.__version__,
                         "fipy_solver_suite": fipy.solvers.solver_suite,
                         "transport_boundary": "half-cell absorption sink; no inflow",
@@ -332,7 +345,12 @@ class SimulationOutput:
                         "field_unit": "Td",
                         "electron_mobility_source": "py3bolos-table" if use_swarm else "empirical",
                         "electron_diffusion_source": "py3bolos-table" if use_swarm else "constant verification coefficient",
-                        "chemistry_backend": "empirical" if chemistry is None else "py3bolos-cantera-table",
+                        "chemistry_backend": (
+                            "empirical" if chemistry is None else
+                            "py3bolos-structured-table" if self.state.reaction_rates is not None else
+                            "py3bolos-cantera-table"
+                        ),
+                        "photoionization_model": "bourdon-2007-helmholtz-3",
                         "chemistry_table_metadata": None if chemistry is None else {
                             **chemistry.metadata, "max_field_td": float(chemistry.field_td[-1]),
                         },

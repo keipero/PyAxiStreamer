@@ -1,4 +1,4 @@
-"""Py3BOLOSとCanteraで電子の輸送・反応係数表を作る。"""
+"""Py3BOLOSで電子輸送係数と構造化機構の反応係数表を作る。"""
 import argparse
 from dataclasses import dataclass
 import hashlib
@@ -9,7 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .kinetics import MECHANISM_PATH, MassActionMechanism, export_mechanism
+from .kinetics import (DRY_AIR_MECHANISM_PATH, MassActionMechanism, exp_v1,
+                       load_mechanism_definition)
 
 
 LEGACY_EQUATIONS = (
@@ -17,13 +18,6 @@ LEGACY_EQUATIONS = (
     "Electron + O2 => 2 Electron + O2+",
     "Electron + O2 => O- + O",
 )
-
-CROSS_SECTION_CHANNELS = (
-    ("IONIZATION", "N2", ("N2+",)),
-    ("IONIZATION", "O2", ("O2+",)),
-    ("ATTACHMENT", "O2", ("O-+O", "O+O-", "O-")),
-)
-
 
 @dataclass(frozen=True)
 class ReactionTable:
@@ -33,15 +27,16 @@ class ReactionTable:
     ----------
     field_td : ndarray, shape (n,)
         0から始まる、昇順の換算電場の大きさ [Td]。
-    rates : ndarray, shape (n, 3)
-        N₂電離、O₂電離、O₂解離付着の順の速度係数 [m³/s]。
+    rates : ndarray
+        E/Nごとの粒子数基準SI係数。形式4の列順は機構の反応ID順。
+        旧形式はN₂電離、O₂電離、O₂解離付着の3列 [m³/s]。
     metadata : dict
         断面積データ、生成条件、ライブラリ版などの記録。
     swarm : ndarray, shape (n, 2), optional
         Py3BOLOSの換算移動度μN [1/(m V s)] と換算拡散係数DN [1/(m s)]。
         反応係数のみの旧形式はNone。
     mechanism : MassActionMechanism, optional
-        Canteraの反応機構から準備した格子計算用の化学量論。旧形式はNone。
+        格子計算用の化学量論。形式1・2はNone。
 
     Examples
     --------
@@ -64,13 +59,13 @@ class ReactionTable:
         field : array_like
             気体セルまたは気体に接する面の換算電場の大きさ [Td]。
         column : ndarray, shape (n,), optional
-            補間する係数列。Noneなら二体反応の3列を返す。
+            補間する係数列。Noneなら機構の全反応係数を返す。
 
         Returns
         -------
         ndarray or numpy.float64
             指定列ではfieldと同じ形状で、単位はcolumnと同じ。
-            反応係数では先頭軸が反応で単位はm³/s。
+            反応係数では先頭軸が反応で、単位は反応次数に対応する粒子数基準のSI。
 
         Raises
         ------
@@ -95,7 +90,11 @@ class ReactionTable:
             )
         if column is not None:
             return np.interp(field, self.field_td, column)
-        return np.stack([np.interp(field, self.field_td, rate) for rate in self.rates.T])
+        sampled = np.stack([np.interp(field, self.field_td, rate) for rate in self.rates.T])
+        if self.mechanism is not None:
+            for index, parameters in self.mechanism.analytic_rates:
+                sampled[index] = exp_v1(field, parameters)
+        return sampled
 
 
 def load_reaction_table(path, config):
@@ -131,11 +130,13 @@ def load_reaction_table(path, config):
     try:
         metadata = data["metadata"]
         field = np.asarray(data["field_td"], dtype=float)
-        rates = np.asarray(data["rates_m3_s"], dtype=float)
         schema = data["schema"]
-        if schema not in (1, 2, 3) or (schema < 3 and metadata["reactions"] != list(LEGACY_EQUATIONS)):
+        if schema not in (1, 2, 3, 4) or (schema < 3 and metadata["reactions"] != list(LEGACY_EQUATIONS)):
             raise ValueError("unsupported chemistry table format or reaction order")
-        mechanism = MassActionMechanism(data["mechanism"]) if schema == 3 else None
+        tabulated = schema == 4
+        rates = np.asarray(data["rates_si" if tabulated else "rates_m3_s"], dtype=float)
+        mechanism = MassActionMechanism(data["mechanism"], tabulated=tabulated) if schema >= 3 else None
+        columns = len(data["mechanism"]["reaction_ids"]) if tabulated else 3
         swarm = None if schema == 1 else np.asarray(
             [data["mobility_n_per_m_v_s"], data["diffusion_n_per_m_s"]], dtype=float
         ).T
@@ -144,10 +145,10 @@ def load_reaction_table(path, config):
                 raise ValueError(f"chemistry table {name} does not match the simulation")
     except (KeyError, TypeError) as exc:
         raise ValueError(f"invalid chemistry table: {path}") from exc
-    if (field.ndim != 1 or field.size < 2 or rates.shape != (field.size, 3)
+    if (field.ndim != 1 or field.size < 2 or rates.shape != (field.size, columns)
             or not np.all(np.isfinite(field)) or not np.all(np.isfinite(rates))
             or field[0] != 0. or np.any(np.diff(field) <= 0.)
-            or np.any(rates < 0.) or np.any(rates[0] != 0.)):
+            or np.any(rates < 0.) or (not tabulated and np.any(rates[0] != 0.))):
         raise ValueError("chemistry table requires increasing E/N from zero and finite nonnegative rates")
     field.setflags(write=False)
     rates.setflags(write=False)
@@ -161,9 +162,52 @@ def load_reaction_table(path, config):
     return ReactionTable(field, rates, metadata, swarm, mechanism)
 
 
+def _rate_evaluators(reactions, parsed, excluded):
+    from bolos.process import Process
+
+    evaluators, indices = [], []
+    for reaction in reactions:
+        spec = reaction["rate"]
+        reactants = reaction["reactants"]
+        if set(spec) == {"exp_v1"}:
+            if sum(reactants.values()) != 2:
+                raise ValueError(f"exp_v1 requires a two-body reaction for {reaction['id']}")
+            parameters = tuple(map(float, spec["exp_v1"]))
+            evaluators.append(lambda solver, eedf, field, parameters=parameters:
+                              exp_v1(field, parameters))
+            indices.append(None)
+            continue
+        if set(spec) != {"collision"}:
+            raise ValueError(f"invalid rate source for {reaction['id']}")
+        channel = spec["collision"]
+        normalized = channel.get("density_normalized_cm3", False)
+        threshold = channel.get("threshold_ev")
+        if (type(normalized) is not bool
+                or reactants != {"Electron": 1, channel["target"]: 2 if normalized else 1}):
+            raise ValueError(f"collision target or rate order does not match {reaction['id']}")
+        matches = [
+            (index, collision) for index, collision in enumerate(parsed, 1)
+            if collision["kind"] == channel["kind"] and collision["target"] == channel["target"]
+            and (collision.get("product") or "").replace("^", "").replace(" ", "").upper()
+            == channel["product"].upper()
+            and (threshold is None or np.isclose(collision.get("threshold", 0.), threshold))
+            and (index in excluded) == normalized
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"expected one cross-section channel for {reaction['id']}, found {len(matches)}")
+        index, collision = matches[0]
+        process = Process(**collision)
+        scale = 1e-6 if normalized else 1.
+        evaluators.append(lambda solver, eedf, field, process=process, scale=scale:
+                          scale * solver.rate(eedf, process))
+        indices.append(index)
+    return evaluators, indices
+
+
 def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitrogen_fraction=.8,
-                            energy_max=450., energy_cells=1200):
-    """断面積データからPy3BOLOSの輸送係数とCanteraの二体反応係数を評価する。
+                            energy_max=900., energy_cells=1200,
+                            mechanism_path=DRY_AIR_MECHANISM_PATH):
+    """断面積データからPy3BOLOSの輸送係数と電子衝突反応係数を評価する。
 
     Parameters
     ----------
@@ -176,9 +220,11 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
     nitrogen_fraction : float, optional
         N₂のモル分率。O₂は残りとする。既定0.8。
     energy_max : float, optional
-        電子エネルギー格子の上限 [eV]。既定450。
+        電子エネルギー格子の上限 [eV]。既定900。
     energy_cells : int, optional
         二次格子のセル数。既定1200。
+    mechanism_path : str or pathlib.Path, optional
+        反応式と係数の参照先を定義するYAML。既定は同梱の乾燥空気機構。
 
     Returns
     -------
@@ -194,12 +240,11 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
 
     Notes
     -----
-    同梱のCantera YAMLから反応式を読み、次数と化学量論を係数表に保存する。
-    外部EEDFを使うCanteraの3反応へ、Py3BOLOSと同じ断面積を登録する。
-    μNとDNは各E/Nで求めたEEDFに対するPy3BOLOSのmobility()・diffusion()から得る。
-    ガス密度で正規化されたと記載のある付着断面積は、二体断面積の集合から除外する。
-    O₂を第三体とする既存の三体付着は、シミュレーション側で別に評価する。
-    0 Tdの二体反応係数は0とし、輸送係数は0 TdでのBOLOS解から求める。
+    YAMLから反応式を読み、次数と化学量論を係数表に保存する。
+    μN、DN、電子衝突反応係数は各E/Nで求めた同じEEDFから評価する。
+    密度正規化された三体付着断面積は二体衝突のEEDF計算から外し、
+    得られたEEDFで積分して粒子数基準のm⁶/sへ換算する。
+    脱離の解析式は係数表に保存し、格子計算時には局所E/Nで直接評価する。
 
     Examples
     --------
@@ -208,10 +253,9 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
         data = generate_reaction_table("air_cross_sections.txt", [100., 300.])
     """
     try:
-        import cantera as ct
         from bolos import grid, parser, solver
     except ImportError as exc:
-        raise RuntimeError("table generation requires Cantera and keipero/Py3bolos in this environment") from exc
+        raise RuntimeError("table generation requires keipero/Py3bolos in this environment") from exc
     from scipy.constants import Boltzmann, elementary_charge
 
     fields = np.asarray(field_td, dtype=float)
@@ -243,26 +287,9 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
             raise ValueError(f"invalid energy or cross section in process {index}")
         processes.append((index, collision))
 
-    mechanism_path = MECHANISM_PATH
-    mechanism_phase = ct.Solution(str(mechanism_path))
-    mechanism_reactions, mechanism = export_mechanism(mechanism_phase)
-    reactions = []
-    indices = []
-    for (kind, target, products), reaction in zip(CROSS_SECTION_CHANNELS, mechanism_reactions):
-        matches = [(index, collision) for index, collision in processes
-                   if collision["kind"] == kind and collision["target"] == target
-                   and collision.get("product", "").replace("^", "").replace(" ", "") in products]
-        if len(matches) != 1:
-            raise ValueError(f"expected one {kind} for {target} -> {products}, found {len(matches)}")
-        index, collision = matches[0]
-        energy, sigma = np.asarray(collision["data"]).T
-        reactions.append(ct.Reaction(equation=reaction.equation,
-                                     rate=ct.ElectronCollisionPlasmaRate(energy, sigma)))
-        indices.append(index)
-
-    gas = ct.Solution(thermo="plasma", kinetics="gas", transport_model="none",
-                      species=mechanism_phase.species(), reactions=reactions)
-    gas.TPX = temperature, ct.one_atm, {"N2": nitrogen_fraction, "O2": 1.-nitrogen_fraction}
+    mechanism_path = Path(mechanism_path)
+    mechanism_contents, reactions, mechanism = load_mechanism_definition(mechanism_path)
+    evaluators, indices = _rate_evaluators(reactions, parsed, excluded)
     energy_grid = grid.QuadraticGrid(0., energy_max, energy_cells)
     boltzmann = solver.BoltzmannSolver(energy_grid)
     boltzmann.load_collisions([collision for _, collision in processes])
@@ -291,29 +318,26 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
         if not np.all(np.isfinite(transport)) or min(transport) <= 0.:
             raise RuntimeError(f"invalid Py3BOLOS mobility or diffusion at {field:g} Td")
         swarm.append(transport)
-        if field == 0.:
-            rates.append([0., 0., 0.])
-            distribution = boltzmann.maxwell(2.)
-            continue
-        gas.set_discretized_electron_energy_distribution(energy_grid.c, positive)
-        # Canteraのkmol基準から、粒子数密度で使う二体係数へ換算する。
-        coefficients = gas.forward_rate_constants/ct.avogadro
+        coefficients = np.asarray([evaluate(boltzmann, positive/population, field)
+                                   for evaluate in evaluators])
         if not np.all(np.isfinite(coefficients)) or np.any(coefficients < 0.):
-            raise RuntimeError(f"invalid Cantera electron collision rates at {field:g} Td")
+            raise RuntimeError(f"invalid reaction rates at {field:g} Td")
         rates.append(coefficients.tolist())
+        if field == 0.:
+            distribution = boltzmann.maxwell(2.)
     return {
-        "schema": 3, "field_td": fields.tolist(), "rates_m3_s": rates, "mechanism": mechanism,
+        "schema": 4, "field_td": fields.tolist(), "rates_si": rates, "mechanism": mechanism,
         "mobility_n_per_m_v_s": [float(mobility) for mobility, _ in swarm],
         "diffusion_n_per_m_s": [float(diffusion) for _, diffusion in swarm],
         "metadata": {
-            "reactions": [reaction.equation for reaction in mechanism_reactions],
+            "reactions": mechanism["reaction_ids"],
             "mechanism_file": mechanism_path.name,
-            "mechanism_sha256": hashlib.sha256(mechanism_path.read_bytes()).hexdigest(),
+            "mechanism_sha256": hashlib.sha256(mechanism_contents).hexdigest(),
             "temperature": temperature,
             "nitrogen_fraction": nitrogen_fraction, "oxygen_fraction": 1.-nitrogen_fraction,
             "source_file": path.name, "source_sha256": hashlib.sha256(contents).hexdigest(),
             "source_process_indices": indices, "excluded_density_normalized_processes": excluded,
-            "cantera_version": ct.__version__, "bolos_version": version("bolos"),
+            "bolos_version": version("bolos"),
             "bolos_solver_sha256": hashlib.sha256(Path(solver.__file__).read_bytes()).hexdigest(),
             "energy_max_ev": energy_max, "energy_cells": energy_cells,
             "max_negative_eedf_population": max_negative,
@@ -346,10 +370,11 @@ def main(argv=None):
     parser.add_argument("--temperature", type=float, default=300.)
     parser.add_argument("--nitrogen-fraction", type=float, default=.8)
     parser.add_argument("--min-td", type=float, default=.01)
-    parser.add_argument("--max-td", type=float, default=2000.)
+    parser.add_argument("--max-td", type=float, default=10000.)
     parser.add_argument("--points", type=int, default=257)
-    parser.add_argument("--energy-max", type=float, default=450.)
+    parser.add_argument("--energy-max", type=float, default=900.)
     parser.add_argument("--energy-cells", type=int, default=1200)
+    parser.add_argument("--mechanism", type=Path, default=DRY_AIR_MECHANISM_PATH)
     args = parser.parse_args(argv)
     if not 0. < args.min_td < args.max_td < np.inf or args.points < 2:
         parser.error("require 0 < min-td < max-td and at least 2 points")
@@ -358,6 +383,7 @@ def main(argv=None):
             args.cross_sections, np.geomspace(args.min_td, args.max_td, args.points),
             temperature=args.temperature, nitrogen_fraction=args.nitrogen_fraction,
             energy_max=args.energy_max, energy_cells=args.energy_cells,
+            mechanism_path=args.mechanism,
         )
         args.output.write_text(json.dumps(data, indent=2, allow_nan=False)+"\n", encoding="utf-8")
     except (OSError, ValueError, RuntimeError) as exc:

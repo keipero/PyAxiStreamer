@@ -1,0 +1,56 @@
+description: Dry N2/O2 mechanism. O2- detachment with M is expanded into N2 and O2 branches.
+
+reactions:
+  # Electron-impact ionization. Both N2 channels contribute to N2+.
+  - id: n2-ionization-15.60
+    reactants: {Electron: 1, N2: 1}
+    products: {Electron: 2, N2+: 1}
+    rate:
+      collision: {kind: IONIZATION, target: N2, product: N2+, threshold_ev: 15.6}
+    photoionizing: true
+
+  - id: n2-ionization-18.80
+    reactants: {Electron: 1, N2: 1}
+    products: {Electron: 2, N2+: 1}
+    rate:
+      collision: {kind: IONIZATION, target: N2, product: "N2+(B2SIGMA)", threshold_ev: 18.8}
+    photoionizing: true
+
+  - id: o2-ionization-12.06
+    reactants: {Electron: 1, O2: 1}
+    products: {Electron: 2, O2+: 1}
+    rate:
+      collision: {kind: IONIZATION, target: O2, product: O2+, threshold_ev: 12.06}
+    photoionizing: true
+
+  # Electron attachment. The density-normalized channel gives a three-body coefficient.
+  - id: o2-three-body-attachment
+    reactants: {Electron: 1, O2: 2}
+    products: {O2-: 1, O2: 1}
+    rate:
+      collision: {kind: ATTACHMENT, target: O2, product: "", density_normalized_cm3: true}
+
+  - id: o2-dissociative-attachment
+    reactants: {Electron: 1, O2: 1}
+    products: {O-: 1, O: 1}
+    rate:
+      collision: {kind: ATTACHMENT, target: O2, product: O-+O}
+
+  # Detachment. exp_v1 lists [c1 in m³/s, c2 in Td, c3 in Td].
+  - id: o2-detachment-n2
+    reactants: {O2-: 1, N2: 1}
+    products: {Electron: 1, O2: 1, N2: 1}
+    rate:
+      exp_v1: [1.24e-17, 179, 8.8]
+
+  - id: o2-detachment-o2
+    reactants: {O2-: 1, O2: 1}
+    products: {Electron: 1, O2: 2}
+    rate:
+      exp_v1: [1.24e-17, 179, 8.8]
+
+  - id: o-detachment-n2
+    reactants: {O-: 1, N2: 1}
+    products: {Electron: 1, N2O: 1}
+    rate:
+      exp_v1: [1.16e-18, 48.9, 11]

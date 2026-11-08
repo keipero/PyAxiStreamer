@@ -10,7 +10,8 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
-from streamer_drift_diffusion.kinetics import DENSITY_NAMES, MECHANISM_PATH, export_mechanism
+from streamer_drift_diffusion.kinetics import DENSITY_NAMES, MECHANISM_PATH, SPECIES_FIELDS, export_mechanism
+from streamer_drift_diffusion.kinetics import DRY_AIR_MECHANISM_PATH, load_mechanism_definition
 from streamer_drift_diffusion.plasma_chemistry import LEGACY_EQUATIONS, load_reaction_table
 from streamer_drift_diffusion.reactions import apply_reactions, calculate_reaction_coefficients
 from streamer_drift_diffusion.simulation_types import molecular_density
@@ -87,13 +88,17 @@ class ChemistryTests(unittest.TestCase):
         assert_allclose(oxygen[gas], 4e20, rtol=1e-15)
         assert_array_equal(state.o[~gas], 0.)
 
-    def test_grid_run_records_table_and_saves_atomic_oxygen(self):
+    def test_grid_run_records_table_and_saves_species_densities(self):
         """通常の時間ループで係数表を使用し、出力へ由来を記録する。"""
         self.add_swarm_coefficients()
         state = run_simulation(self.config, output_dir=self.output, verbose=False)
         self.assertGreater(float(state.o.max()), 0.)
         assert_array_equal(state.o, state.om)
         assert_allclose(np.loadtxt(self.output/"O1.csv").reshape(state.o.shape), state.o, rtol=5e-7)
+        with np.load(self.output/"species1.npz", allow_pickle=False) as archive:
+            self.assertEqual(set(archive.files), set(SPECIES_FIELDS))
+            for species, field in SPECIES_FIELDS.items():
+                assert_array_equal(archive[species], getattr(state, field))
         report = json.loads((self.output/"run_config.json").read_text(encoding="utf-8"))
         self.assertEqual(report["chemistry_backend"], "py3bolos-cantera-table")
         self.assertEqual(report["electron_mobility_source"], "py3bolos-table")
@@ -154,6 +159,46 @@ class ChemistryTests(unittest.TestCase):
         assert_allclose(state.de[state.gas_mask], .06, rtol=1e-14)
         assert_array_equal(state.de[~state.gas_mask], 0.)
         assert_array_equal(state.mobility_r[0], 0.)
+
+    def test_dry_air_mechanism_uses_all_channels_and_conserves_elements(self):
+        self.add_swarm_coefficients()
+        _, _, mechanism = load_mechanism_definition(DRY_AIR_MECHANISM_PATH)
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        del data["rates_m3_s"]
+        collision_rates = [1e-17, 2e-17, 3e-17, 1e-38, 4e-17]
+        data.update(schema=4, mechanism=mechanism,
+                    rates_si=[collision_rates + [0., 0., 0.]] * 3)
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+        state = initialize_simulation(self.config)
+        mask = state.gas_mask
+        state.ne[mask] = 1e18
+        state.n2[mask], state.o2[mask] = 1e20, 2e20
+        state.om[mask], state.o2m[mask] = 3e17, 5e17
+        state.abs_e[mask] = 250.
+        calculate_reaction_coefficients(state)
+        k_o2m = 1.24e-17*np.exp(-(179./(8.8 + 250.))**2)
+        k_om = 1.16e-18*np.exp(-(48.9/(11. + 250.))**2)
+        assert_allclose(state.reaction_rates[:, mask][:, 0],
+                        collision_rates + [k_o2m, k_o2m, k_om], rtol=1e-14)
+        initial = np.array([getattr(state, name)[mask][0] for name in DENSITY_NAMES])
+        extent = np.array([1e21, 2e21, 6e21, 4e20, 8e21,
+                           k_o2m*5e17*1e20, k_o2m*5e17*2e20, k_om*3e17*1e20])
+        assert_allclose(state.chemistry.mechanism.impact_ionization(state)[mask],
+                        extent[:3].sum(), rtol=1e-14)
+        dt = min(chemistry_limit(state, self.config)/2, 1e-6)
+        apply_reactions(state, self.config, dt=dt)
+        final = np.array([getattr(state, name)[mask][0] for name in DENSITY_NAMES])
+        assert_allclose(final, initial + dt * (extent @ np.asarray(mechanism["net"])), rtol=1e-14)
+        balances = np.array([[0, 2, 0, 2, 0, 0, 0, 0, 2],
+                             [0, 0, 2, 0, 2, 1, 2, 1, 1],
+                             [-1, 0, 0, 1, 1, -1, -1, 0, 0]])
+        assert_allclose(balances @ final, balances @ initial, rtol=1e-14)
+
+        # 電子がなくても脱離は進み、負イオンの消費で刻みを制限する。
+        state.ne[mask] = 0.
+        self.assertTrue(np.isfinite(chemistry_limit(state, self.config)))
+        apply_reactions(state, self.config, dt=dt)
+        self.assertTrue(np.all(state.ne[mask] > 0.))
 
     def test_swarm_table_rejects_a_constant_diffusion_override(self):
         """BOLOS拡散を指定した計算で、一定拡散との併記を検出する。"""

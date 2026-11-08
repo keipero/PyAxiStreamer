@@ -37,7 +37,8 @@ class AdaptiveTests(unittest.TestCase):
         state.vey[1, 2] = 5.*volume/state.sz[1, 1]
         transport = ElectronTransport(state, config.delta).prepare(state)
         dt = config.dt_cfl_number*transport.transport_limit
-        self.assertAlmostEqual(dt, config.dt_cfl_number / 14.)
+        # 全流出面が気体間。再構築した面密度の上界はセル密度の2倍。
+        self.assertAlmostEqual(dt, config.dt_cfl_number / (2.*14.))
         for seed in range(5):
             state.ne[:] = np.random.default_rng(seed).random(state.ne.shape)
             transport.step(state, dt, prepared=True)

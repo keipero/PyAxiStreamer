@@ -5,6 +5,7 @@
 | Notebook | 内容 |
 |---|---|
 | [plot_axial_field_profiles.ipynb](plot_axial_field_profiles.ipynb) | 複数時刻の電界の軸方向分布 |
+| [validate_photoionization.ipynb](validate_photoionization.ipynb) | ガウス源に対する光電離生成レートの軸方向・径方向分布と積分解との比較 |
 | [plot_electrode_grid.ipynb](plot_electrode_grid.ipynb) | 電極形状と計算格子 |
 | [plot_streak_from_csv.ipynb](plot_streak_from_csv.ipynb) | 位置×時間のストリーク画像 |
 | [animate_streamer.ipynb](animate_streamer.ipynb) | 電子密度・電位・電界のアニメーション |

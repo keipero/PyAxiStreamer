@@ -1,15 +1,18 @@
-"""Canteraの化学量論を粒子数密度の格子計算に使う。"""
+"""構造化された化学量論を粒子数密度の格子計算に使う。"""
 from pathlib import Path
 
 import numpy as np
+from ruamel.yaml import YAML, YAMLError
 
 
 MECHANISM_PATH = Path(__file__).with_name("data") / "air_chemistry.yaml"
+DRY_AIR_MECHANISM_PATH = MECHANISM_PATH.with_name("dry_air_chemistry.yaml")
 SPECIES_FIELDS = {
     "Electron": "ne", "N2": "n2", "O2": "o2", "N2+": "n2p", "O2+": "o2p",
     "O-": "om", "O2-": "o2m", "O": "o",
 }
-DENSITY_NAMES = tuple(SPECIES_FIELDS.values())
+DRY_AIR_SPECIES_FIELDS = {**SPECIES_FIELDS, "N2O": "n2o"}
+DENSITY_NAMES = tuple(DRY_AIR_SPECIES_FIELDS.values())
 REACTION_FIELDS = {
     "n2-ionization": "k1", "o2-ionization": "k1_o2",
     "o2-dissociative-attachment": "k2", "o2-three-body-attachment": "k3",
@@ -71,8 +74,10 @@ class MassActionMechanism:
     Parameters
     ----------
     data : dict
-        Canteraから抽出したspecies、reaction_ids、orders、net。
+        反応定義から抽出したspecies、reaction_ids、orders、net。
         行は反応、列は化学種。ordersは速度式の次数、netは正味の生成数。
+    tabulated : bool, optional
+        形式4の係数表を使う。既定は形式3の旧機構。
 
     Raises
     ------
@@ -92,33 +97,60 @@ class MassActionMechanism:
         mechanism = table.mechanism
     """
 
-    def __init__(self, data):
-        if (data["species"] != list(SPECIES_FIELDS)
-                or data["reaction_ids"] != list(REACTION_FIELDS)):
+    def __init__(self, data, *, tabulated=False):
+        species = DRY_AIR_SPECIES_FIELDS if tabulated else SPECIES_FIELDS
+        ids = data["reaction_ids"]
+        if (data["species"] != list(species) or not ids
+                or any(not isinstance(name, str) or not name for name in ids)
+                or len(set(ids)) != len(ids)
+                or (not tabulated and ids != list(REACTION_FIELDS))):
             raise ValueError("unsupported chemistry mechanism species or reaction IDs")
+        self.density_names = tuple(species.values())
+        self.tabulated = tabulated
         orders = np.asarray(data["orders"], dtype=float)
         net = np.asarray(data["net"], dtype=float)
-        shape = (len(REACTION_FIELDS), len(SPECIES_FIELDS))
+        shape = (len(ids), len(species))
         if (orders.shape != shape or net.shape != shape
                 or not np.all(np.isfinite(orders)) or not np.all(np.isfinite(net))
                 or np.any(orders != np.floor(orders)) or np.any(net != np.floor(net))
                 or np.any(orders < 0.) or np.any(net < -orders)
-                or np.any(orders.sum(axis=1) != (2, 2, 2, 3))
-                or np.any(orders[:, 0] != 1.) or np.any(net[:, 0] == 0.)):
+                or np.any(~np.any(net, axis=1))
+                or np.any(orders.sum(axis=1) < 1.)
+                or (not tabulated and (np.any(orders.sum(axis=1) != (2, 2, 2, 3))
+                    or np.any(orders[:, 0] != 1.) or np.any(net[:, 0] == 0.)))):
             raise ValueError("invalid chemistry mechanism orders or stoichiometry")
         # 行ごとにN原子、O原子と電荷を保存する。
         conserved = ((0, 2, 0, 2, 0, 0, 0, 0),
                      (0, 0, 2, 0, 2, 1, 2, 1),
                      (-1, 0, 0, 1, 1, -1, -1, 0))
-        if np.any(net @ np.asarray(conserved).T != 0.):
+        atoms_and_charge = np.asarray(conserved)
+        if tabulated:
+            atoms_and_charge = np.column_stack((atoms_and_charge, (2, 1, 0)))
+        if np.any(net @ atoms_and_charge.T != 0.):
             raise ValueError("chemistry mechanism does not conserve N, O, or charge")
         self._factors = tuple(_nonzero_terms(row) for row in orders)
         self._changes = tuple(_nonzero_terms(column) for column in net.T)
+        self._photoionizing = ()
+        self.analytic_rates = ()
+        if tabulated:
+            photoionizing = np.asarray(data["photoionizing"])
+            if (photoionizing.shape != (len(ids),) or photoionizing.dtype.kind != "b"
+                    or np.any(photoionizing & ((orders[:, 0] != 1) | (net[:, 0] <= 0)))):
+                raise ValueError("invalid photoionizing reaction flags")
+            self._photoionizing = tuple(zip(np.flatnonzero(photoionizing), net[photoionizing, 0]))
+            self.analytic_rates = tuple(
+                (i, _exp_v1_parameters(parameters))
+                for i, parameters in enumerate(data["exp_v1"]) if parameters is not None
+            )
+            if len(data["exp_v1"]) != len(ids):
+                raise ValueError("invalid number of analytic rate definitions")
+            if any(orders[i, 0] for i, _ in self.analytic_rates):
+                raise ValueError("electron-impact reactions require tabulated coefficients")
         self._loss_factors = []
         for species, changes in enumerate(self._changes):
             terms = []
             for reaction, change in changes:
-                if species == 0 or change < 0:
+                if change < 0 or (species == 0 and orders[reaction, species] > 0):
                     row = orders[reaction].copy()
                     row[species] -= 1
                     terms.append((reaction, abs(change), _nonzero_terms(row)))
@@ -147,10 +179,10 @@ class MassActionMechanism:
 
             delta_ne, *_ = state.chemistry.mechanism.increments(state, config.dt)
         """
-        densities = tuple(getattr(state, name) for name in DENSITY_NAMES)
+        densities = tuple(getattr(state, name) for name in self.density_names)
         extents = tuple(
-            _mass_action(dt * getattr(state, name), densities, factors)
-            for name, factors in zip(REACTION_FIELDS.values(), self._factors)
+            _mass_action(dt * rate, densities, factors)
+            for rate, factors in zip(self._rates(state), self._factors)
         )
         return tuple(sum((extents[i] if nu == 1 else nu * extents[i] for i, nu in terms), 0.)
                      for terms in self._changes)
@@ -174,13 +206,67 @@ class MassActionMechanism:
 
             frequency = state.chemistry.mechanism.maximum_frequency(state)
         """
-        densities = tuple(getattr(state, name) for name in DENSITY_NAMES)
-        rates = tuple(getattr(state, name) for name in REACTION_FIELDS.values())
+        densities = tuple(getattr(state, name) for name in self.density_names)
+        rates = self._rates(state)
         return max(
             float(np.max(sum(_mass_action(rates[i] if nu == 1 else nu * rates[i], densities, factors)
                              for i, nu, factors in terms)[state.gas_mask]))
             for terms in self._loss_factors
         )
+
+    def _rates(self, state):
+        if self.tabulated:
+            return state.reaction_rates
+        return tuple(getattr(state, name) for name in REACTION_FIELDS.values())
+
+    def impact_ionization(self, state):
+        """光電離源に指定された衝突電離の電子生成率を返す。"""
+        densities = tuple(getattr(state, name) for name in self.density_names)
+        return sum((weight * _mass_action(state.reaction_rates[i], densities, self._factors[i])
+                    for i, weight in self._photoionizing), np.zeros_like(state.ne))
+
+
+def _exp_v1_parameters(values):
+    c1, c2, c3 = map(float, values)
+    if not np.all(np.isfinite((c1, c2, c3))) or min(c1, c2) < 0. or c3 <= 0.:
+        raise ValueError("invalid exp_v1 coefficients")
+    return c1, c2, c3
+
+
+def exp_v1(field, parameters):
+    """換算電界[Td]でAfivo型の脱離係数を評価する。"""
+    c1, c2, c3 = parameters
+    return c1 * np.exp(-(c2 / (c3 + field))**2)
+
+
+def load_mechanism_definition(path):
+    """YAMLの反応式と係数指定を読み、反応次数・化学量論に変換する。"""
+    contents = Path(path).read_bytes()
+    try:
+        reactions = YAML(typ="safe").load(contents)["reactions"]
+        if any(not isinstance(reaction["rate"], dict) for reaction in reactions):
+            raise ValueError("each reaction requires a structured rate definition")
+        species = list(DRY_AIR_SPECIES_FIELDS)
+        reactants = [reaction["reactants"] for reaction in reactions]
+        products = [reaction["products"] for reaction in reactions]
+        for side in (*reactants, *products):
+            if (not isinstance(side, dict) or any(
+                    name not in species or type(count) is not int or count <= 0
+                    for name, count in side.items())):
+                raise ValueError("invalid species or count in reaction definition")
+        data = {
+            "species": species,
+            "reaction_ids": [reaction["id"] for reaction in reactions],
+            "orders": [[side.get(name, 0) for name in species] for side in reactants],
+            "net": [[right.get(name, 0) - left.get(name, 0) for name in species]
+                    for left, right in zip(reactants, products)],
+            "photoionizing": [reaction.get("photoionizing", False) for reaction in reactions],
+            "exp_v1": [reaction["rate"].get("exp_v1") for reaction in reactions],
+        }
+        MassActionMechanism(data, tabulated=True)
+        return contents, reactions, data
+    except (KeyError, TypeError, YAMLError) as exc:
+        raise ValueError(f"invalid reaction definition: {path}") from exc
 
 
 def export_mechanism(gas):

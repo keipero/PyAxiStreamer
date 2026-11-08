@@ -228,6 +228,7 @@ def chemistry_limit(state, config):
     電子の生成・消費、中性粒子の消費を指定割合以下に抑える。
     生成と消費の相殺は使わず、気体セルだけを評価する。反応が全て0ならmath.inf。
     Canteraの反応機構を含む係数表では、密度更新と同じ反応次数と化学量論を使う。
+    光電離によるO₂の追加消費を既存の制約に安全側で加算する。
 
     Examples
     --------
@@ -240,14 +241,21 @@ def chemistry_limit(state, config):
     """
     if state.chemistry is not None and state.chemistry.mechanism is not None:
         maximum = state.chemistry.mechanism.maximum_frequency(state)
-        return config.dt_chemistry_fraction / maximum if maximum > 0 else math.inf
-    k_o2 = state.k1 if state.k1_o2 is None else state.k1_o2
-    ionization = (state.k1*(state.n2 + state.o2) if state.k1_o2 is None
-                  else state.k1*state.n2 + k_o2*state.o2)
-    electron_rate = ionization + state.k2 * state.o2 + state.k3 * state.o2**2
-    nitrogen_rate = state.k1 * state.ne
-    oxygen_rate = (k_o2 + state.k2 + state.k3 * state.o2) * state.ne
-    maximum = max(float(np.max(x[state.gas_mask])) for x in (electron_rate, nitrogen_rate, oxygen_rate))
+    else:
+        k_o2 = state.k1 if state.k1_o2 is None else state.k1_o2
+        ionization = (state.k1*(state.n2 + state.o2) if state.k1_o2 is None
+                      else state.k1*state.n2 + k_o2*state.o2)
+        electron_rate = ionization + state.k2 * state.o2 + state.k3 * state.o2**2
+        nitrogen_rate = state.k1 * state.ne
+        oxygen_rate = (k_o2 + state.k2 + state.k3 * state.o2) * state.ne
+        maximum = max(float(np.max(x[state.gas_mask])) for x in (electron_rate, nitrogen_rate, oxygen_rate))
+    rate = state.photoionization.rate
+    active = rate > 0.
+    if np.any(active):
+        oxygen = state.o2[active]
+        if np.any(oxygen <= 0.):
+            return 0.
+        maximum += float(np.max(rate[active] / oxygen))
     return config.dt_chemistry_fraction / maximum if maximum > 0 else math.inf
 
 
@@ -379,7 +387,7 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
     for retries in range(max_retries + 1):
         try:
             with np.errstate(over="raise", invalid="raise", divide="raise"):
-                if np.any(state.de) and dt > transport.transport_limit * (1+1e-12):
+                if dt > transport.transport_limit * (1+1e-12):
                     raise TimestepError("explicit drift-diffusion constraint")
                 losses = transport.step(state, dt, prepared=True)
                 validate_densities(state)

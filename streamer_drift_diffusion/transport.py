@@ -2,62 +2,57 @@
 import math
 import numpy as np
 
-from fipy import (CellVariable, ExplicitDiffusionTerm, ExplicitUpwindConvectionTerm,
-                  FaceVariable, TransientTerm)
+from fipy import (CellVariable, ExplicitDiffusionTerm, FaceVariable, TransientTerm,
+                  VanLeerConvectionTerm)
 from fipy.solvers import LinearLUSolver
 
 
+_MAX_FACE_RATIO = 2.
 
-class _ExplicitUpwind(ExplicitUpwindConvectionTerm):
-    """FiPy 4.0.xでゼロ面の不要なPeclet数除算を避ける上流項。
 
-    Parameters
-    ----------
-    coeff : fipy.FaceVariable
-        気体間面の速度ベクトル [m/s]。
+class _VanLeer(VanLeerConvectionTerm):
+    """FiPyのVan Leer補正に、境界近傍の気体側勾配を組み込む。"""
 
-    Notes
-    -----
-    正のTransientTermに対する一次上流の重みは速度の符号だけで決まる。
-    拡散幾何係数を重み計算へ渡さず、D=0・速度0の面や軸で0/0を起こさない。
-    物理係数やNumPyの例外設定は変更しない。内部実装用で、通常はElectronTransportを使う。
+    def __init__(self, velocity, grid, gas):
+        super().__init__(coeff=velocity)
+        radial = np.zeros_like(gas)
+        axial = np.zeros_like(gas)
+        radial[1:-1] = gas[:-2] & gas[1:-1] & gas[2:]
+        axial[:, 1:-1] = gas[:, :-2] & gas[:, 1:-1] & gas[:, 2:]
+        valid = np.stack((radial.ravel(order="F"), axial.ravel(order="F")))
+        faces = np.flatnonzero(grid.mesh.interiorFaces)
+        axis = np.argmax(grid.directions[:, faces], axis=0)
+        cells = np.asarray(grid.mesh.faceCellIDs[:, faces])
+        one_sided = grid.interior(gas)[faces] & ~valid[axis, cells]
+        self._boundary_indices = np.flatnonzero(one_sided.any(axis=0))
+        self._boundary_faces = faces[self._boundary_indices]
+        self._one_sided = one_sided[:, self._boundary_indices]
+        axis = axis[self._boundary_indices]
+        cells = cells[:, self._boundary_indices]
+        # 軸対称な二次分布で、最初のセル中心の勾配は隣接差分の半分。
+        on_axis = (axis == 0) & (cells % grid.shape[0] == 0)
+        self._slope_scale = np.where(on_axis, .5, 1.) / grid.spacing
+        self._area = grid.area[self._boundary_faces]
+        self._volume = grid.volume.ravel(order="F")[cells]
 
-    Examples
-    --------
-    >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
-    >>> config = SimulationConfig(nr=2, nz=3, voltage=0., nmax=0.,
-    ...                           background_ionization=0., t_end=0.)
-    >>> state = initialize_simulation(config)
-    >>> transport = ElectronTransport(state, config.delta)
-    >>> import numpy as np
-    >>> with np.errstate(over='raise', invalid='raise', divide='raise'):
-    ...     losses = transport.step(state, config.dt)
-    >>> float(losses.sum())
-    0.0
-    """
     def _getWeight(self, var, transientGeomCoeff=None, diffusionGeomCoeff=None):
-        """拡散係数に依存しない一次上流の重みをFiPyへ要求する。
-
-        Parameters
-        ----------
-        var : fipy.CellVariable
-            輸送されるセル中心変数。
-        transientGeomCoeff : array_like, optional
-            FiPyが渡す時間項の幾何係数。
-        diffusionGeomCoeff : array_like, optional
-            FiPy互換の引数。この実装では常に無視してNoneを渡す。
-
-        Returns
-        -------
-        dict
-            FiPy内部の面重み。具体的な構造はFiPyの実装に従う。
-
-        Notes
-        -----
-        FiPy 4.0.x内部APIへの限定したアダプタ。単独で呼ばず、ElectronTransportから使用する。
-        """
+        # 風上側は速度の符号だけで決まる。軸などのゼロ面で0/0を避ける。
         return super()._getWeight(var, transientGeomCoeff=transientGeomCoeff,
                                   diffusionGeomCoeff=None)
+
+    def _getOldAdjacentValues(self, oldArray, id1, id2, dt):
+        values = np.asarray(super()._getOldAdjacentValues(oldArray, id1, id2, dt))
+        old = np.asarray(oldArray.value)
+        center = np.stack((old[id1], old[id2]))
+        boundary = self._boundary_indices
+        boundary_center = center[:, boundary]
+        face_rate = np.abs(np.asarray(self._getGeomCoeff(oldArray))[self._boundary_faces])
+        # 欠けた側の差分を気体側の差分で補い、FiPyと同じ時間補正を使う。
+        slope = (boundary_center[::-1] - boundary_center) * self._slope_scale
+        one_sided = boundary_center + .5*slope*(self._volume - dt*face_rate)/self._area
+        values[:, boundary] = np.where(self._one_sided, one_sided, values[:, boundary])
+        # 流出面値の上界をCFL評価と共有する。
+        return tuple(np.clip(values, 0., _MAX_FACE_RATIO*center))
 
 
 class ElectronTransport:
@@ -103,7 +98,7 @@ class ElectronTransport:
     Notes
     -----
     中心配列は(nr,nz)、vexは(nr+1,nz)、veyは(nr,nz+1)。deは等方拡散係数 [m²/s]。
-    一次上流移流と拡散を同じ旧密度から陽的Eulerで更新する。
+    Van Leer移流と拡散を同じ旧密度から陽的に更新する。
     気体間Dは調和平均。電極・外端は気体側Dと半セル距離による吸収で、外から供給しない。
     1シミュレーションにつき一度作り、格子と電極形状は計算中に変更しない。
     流出数の累積は受理を判断する呼出側が担当する。
@@ -165,9 +160,9 @@ class ElectronTransport:
         self.diffusion = FaceVariable(mesh=self.mesh, value=0.)
         self.absorption = CellVariable(mesh=self.mesh, value=0.)
         self.equation = (TransientTerm()
-                         == ExplicitDiffusionTerm(coeff=self.diffusion)
-                         - _ExplicitUpwind(coeff=self.velocity)
-                         - self.absorption * self.density.old)
+                         + _VanLeer(self.velocity, self.grid, self.gas)
+                         - ExplicitDiffusionTerm(coeff=self.diffusion)
+                         + self.absorption * self.density.old)
         self.solver = LinearLUSolver(tolerance=1e-12)
 
     def prepare(self, state):
@@ -197,7 +192,7 @@ class ElectronTransport:
         固定の面分類・距離は初期化時に作る。気体間Dは調和平均、吸収面Dは気体側値。
         片側Dが0の気体間面は拡散障壁となり、金属内のDは0として扱う。
         面係数D*A/dに外向き移流A*max(v_out,0)を加え、同じ境界係数を損失項と流出へ使う。
-        合算上限はセルの移流・拡散流出対角の和、純拡散上限は拡散対角だけから求める。
+        合算上限はセルの移流・拡散流出の上界から求める。純拡散上限は拡散対角だけを使う。
         気体セルだけを評価し、両上限にCFL数・安全係数は掛けない。軸の面積は0。
         速度・Dを変更したら再度呼ぶ。密度のみが変わる試行・再試行では再利用できる。
 
@@ -233,7 +228,8 @@ class ElectronTransport:
         self.boundary_rates = (grid.area*np.maximum(np.where(self.low_gas, speed, -speed), 0.)
                                + self.diffusion_rates)*self.boundary
         diffusion_loss = grid.sum_faces(self.diffusion_rates)
-        rate = speed*grid.area
+        # 内部面の再構築密度は最大で旧セル密度の2倍。吸収面は旧セル値を使う。
+        rate = speed*grid.area*np.where(self.interior, _MAX_FACE_RATIO, 1.)
         loss = grid.sum_faces(np.maximum(rate, 0.), np.maximum(-rate, 0.)) + diffusion_loss
         maxima = (float(np.max((values/grid.volume)[self.gas])) for values in (loss, diffusion_loss))
         self.transport_limit, self.diffusion_limit = (1/value if value > 0. else math.inf for value in maxima)

@@ -10,6 +10,7 @@ from .grid import CylindricalGrid
 if TYPE_CHECKING:
     from .electrostatics import PoissonSolver
     from .plasma_chemistry import ReactionTable
+    from .photoionization import PhotoionizationSolver
 
 # プロジェクトルートの絶対パス
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -97,6 +98,9 @@ class SimulationConfig:
     chemistry_table : str or pathlib.Path or None, optional
         Py3BOLOSとCanteraで生成した電子輸送・反応係数表。Noneなら従来の経験式。
 
+    photoionization_efficiency : float, optional
+        発光源の無次元係数。消光補正前の値で、範囲は(0, 1]、既定0.075。
+
     Notes
     -----
     単位はSI、換算電場だけTdを用いる。フィールドの再代入は禁止。
@@ -149,6 +153,7 @@ class SimulationConfig:
     electrode_gap: float = 1e-3 # 接地平面z=0から電極先端までの距離[m]。領域寸法とは独立。
     electron_diffusion: float = 0.0 # 従来モード用の一定電子拡散係数 [m²/s]。
     chemistry_table: str | Path | None = None
+    photoionization_efficiency: float = 0.075
 
 
 def molecular_density(config):
@@ -295,6 +300,9 @@ class SimulationState:
         正本の値をFortran順に変形した2次元ビュー。独立した値は保持しない。
         neは電子密度 [m⁻³]、phiは総電位 [V]。独立した退避値にはcopy()を使う。
 
+    photoionization : PhotoionizationSolver
+        共有格子で3項Helmholtz近似の光電離源を求めるソルバ。
+
     Notes
     -----
     通常はinitialize_simulation()で生成する。フィールドの再代入は禁止するが、配列要素はその場で更新する。
@@ -358,6 +366,9 @@ class SimulationState:
     o: np.ndarray
     k1_o2: np.ndarray | None
     chemistry: "ReactionTable | None"
+    n2o: np.ndarray
+    reaction_rates: np.ndarray | None
+    photoionization: "PhotoionizationSolver"
 
     @property
     def ne(self):
