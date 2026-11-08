@@ -1,0 +1,40 @@
+# Komuro, Ono and Oda (2012), J. Phys. D 45 265201, figure 5 (solid Calculation curve).
+# DOI: 10.1088/0022-3727/45/26/265201
+# Approximate digitization. The inset is used through 100 ns and the main plot thereafter.
+# Time [ns] is relative to the paper's origin. Voltage [kV] is normalized to a 24 kV peak.
+-20     0.0
+-15     0.3
+-10     0.9
+-5      2.3
+0       5.2
+3       7.8
+5       9.7
+8       13.1
+10      15.6
+12      17.8
+15      21.0
+18      23.2
+20      23.9
+21      24.0
+22      24.0
+25      23.8
+30      23.4
+40      22.8
+50      22.2
+60      21.4
+80      20.1
+100     18.9
+125     17.5
+150     16.3
+200     14.0
+250     12.0
+300     10.3
+400     7.7
+500     5.4
+650     3.6
+800     2.3
+1000    1.3
+1250    0.6
+1500    0.4
+1750    0.2
+2000    0.0

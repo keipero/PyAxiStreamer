@@ -9,7 +9,7 @@ import numpy as np
 import fipy
 import scipy
 
-from .kinetics import SPECIES_FIELDS
+from .kinetics import DRY_AIR_SPECIES_FIELDS, SPECIES_FIELDS
 
 
 
@@ -200,7 +200,8 @@ def write_step_output(output_dir, step, state):
         write_c_matrix(Path(output_dir) / f"O{step}.csv", state.o)
         np.savez_compressed(
             Path(output_dir) / f"species{step}.npz",
-            **{species: getattr(state, field) for species, field in SPECIES_FIELDS.items()},
+            **{species: getattr(state, field) for species, field in (
+                DRY_AIR_SPECIES_FIELDS if state.reaction_rates is not None else SPECIES_FIELDS).items()},
         )
     write_c_matrix(Path(output_dir) / f"Sph{step}.csv", state.photoionization.rate)
 
@@ -344,7 +345,11 @@ class SimulationOutput:
                         "field_unit": "Td",
                         "electron_mobility_source": "py3bolos-table" if use_swarm else "empirical",
                         "electron_diffusion_source": "py3bolos-table" if use_swarm else "constant verification coefficient",
-                        "chemistry_backend": "empirical" if chemistry is None else "py3bolos-cantera-table",
+                        "chemistry_backend": (
+                            "empirical" if chemistry is None else
+                            "py3bolos-structured-table" if self.state.reaction_rates is not None else
+                            "py3bolos-cantera-table"
+                        ),
                         "photoionization_model": "bourdon-2007-helmholtz-3",
                         "chemistry_table_metadata": None if chemistry is None else {
                             **chemistry.metadata, "max_field_td": float(chemistry.field_td[-1]),

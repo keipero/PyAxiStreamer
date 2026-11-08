@@ -366,6 +366,8 @@ class SimulationState:
     o: np.ndarray
     k1_o2: np.ndarray | None
     chemistry: "ReactionTable | None"
+    n2o: np.ndarray
+    reaction_rates: np.ndarray | None
     photoionization: "PhotoionizationSolver"
 
     @property

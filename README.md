@@ -99,52 +99,43 @@ python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-outp
 この場合の既定値0は拡散なしを表します。
 
 反応は電子衝突電離、解離付着、三体付着、背景電離を含みます。
-光電離は3項Helmholtz近似で常に計算します。再結合・脱離・イオン輸送は含みません。負密度のクリップは行いません。
+光電離は3項Helmholtz近似で常に計算します。乾燥空気の形式4の係数表では負イオンからの脱離も含みます。
+イオンは静止近似で扱います。
 
-## Py3BOLOSとCanteraの電子輸送・反応係数表
+## 乾燥空気の反応機構とPy3BOLOS係数表
 
-Py3BOLOSとCantera 3.2を導入した環境で、用意したBOLSIG+形式のN₂/O₂断面積ファイルから係数表を生成します。
-Py3BOLOSで電子エネルギー分布（EEDF）を求め、Canteraにその分布と断面積を渡して、N₂電離、O₂電離、O₂解離付着の二体係数を個別に評価します。
-同じEEDFからPy3BOLOSで換算移動度μNと換算拡散係数DNも計算します。二体反応係数の単位はm³/sです。
-[Canteraの外部EEDF設定](https://cantera.org/stable/python/thermo.html#cantera.ThermoPhase.set_discretized_electron_energy_distribution)
+標準の [dry_air_chemistry.yaml](streamer_drift_diffusion/data/dry_air_chemistry.yaml) は9化学種と7反応を定義します。
+O₂⁻の脱離は第三体N₂・O₂の2行に展開するため、ファイルと係数表には8行あります。
+N₂の15.60 eVと18.80 eVの電離は別々に評価し、どちらもN₂⁺へ加算します。
+O⁻の脱離ではN₂Oを生成します。
 
-同梱の [air_chemistry.yaml](streamer_drift_diffusion/data/air_chemistry.yaml) で8化学種と4反応を管理します。
-YAMLの速度定数は単位倍率の参照値です。物理的な係数は二体反応ではEEDFから求め、三体付着では既存の経験式を使います。
-係数表の生成時にCanteraで機構を読み込み、速度式の次数と正味の化学量論を表へ保存します。
-格子計算ではこの情報からNumPyで全セルの反応量と時間刻み制約を評価します。生成済みの表があれば格子計算はCanteraとPy3BOLOSの追加インストールなしで実行できます。
+`reactants`・`products` に化学種と整数係数、`rate` に断面積チャネル（`collision`）または脱離式（`exp_v1`）を指定します。
+`photoionizing: true` はHelmholtz光電離の発光源に含める衝突電離を示します。
+既存の9化学種の範囲で反応を追加・削除・並べ替えできます。生成時に元素数と電荷の保存を検査します。
+別のYAMLは `--mechanism` で指定し、編集後はJSON係数表を再生成します。
 
-プロジェクトフォルダで仮想環境を選び、ファイル名を手元のものに置き換えて実行します。
+Py3BOLOSで各E/Nの電子エネルギー分布（EEDF）を求め、5つの電子衝突係数と換算移動度μN・換算拡散係数DNを評価します。
+密度正規化された三体付着断面積はEEDFの二体衝突計算から外し、得られたEEDFで積分してm⁶/sへ換算します。
+格子では電子衝突係数を局所E/Nから補間し、脱離係数は機構の式を局所E/Nで直接評価します。
 
 ```powershell
-python -m streamer_drift_diffusion.plasma_chemistry air_cross_sections.txt air_mechanism_rates.json
-python -m streamer_drift_diffusion --chemistry-table air_mechanism_rates.json --adaptive-timestep --output outputdata_chemistry
+python -m streamer_drift_diffusion.plasma_chemistry air_cross_sections.txt dry_air_v4_rates_10000td.json
+python -m streamer_drift_diffusion --chemistry-table dry_air_v4_rates_10000td.json --adaptive-timestep --output outputdata_chemistry
 ```
 
-PythonやNotebookからは `SimulationConfig(chemistry_table="air_mechanism_rates.json", adaptive_timestep=True)` で指定できます。
-現在の生成コマンドはCantera機構とBOLOS輸送係数を含む形式3を出力します。YAMLを編集した場合は表を再生成します。
-形式1・2も読み込めます。形式1はドリフト式と一定拡散を使い、形式2はBOLOS輸送を使います。
-表を省略した場合は経験式で計算します。形式2・3では `electron_diffusion` は既定値0にします。
+Pythonからは `SimulationConfig(chemistry_table="dry_air_v4_rates_10000td.json", adaptive_timestep=True)` で指定できます。
+実行Notebookでは形式4を生成して使用します。生成済みの表はNumPyで読み込めます。
+過去の計算を再現するため、形式1〜3の表と、表を省略する経験式モードも利用できます。
+BOLOSの輸送係数を使う形式2〜4では `electron_diffusion=0` とします。
 
-断面積ファイルは `N2 -> N2+`、`O2 -> O2+` の電離と、`O2 -> O- + O` の解離付着を一意に含むものを用意します。
-電離生成物の `^` 表記や、解離付着の `O2 -> O-` 表記にも対応します。
-ガス密度で正規化された付着断面積として記載されている過程は除外します。三体付着はO₂を第三体とする経験式で評価します。
-BOLOS輸送では、三体付着の係数は0 Tdの値0と表の最小正電場点での経験値を線形補間します。
-これは拡散で生じた微弱電場で経験式が発散するのを防ぐための低電場近似です。
+既定の生成条件は300 K、N₂:O₂=80:20、0 Tdと0.01～10,000 Tdの正の257点、900 eV・1200セルの二次エネルギー格子です。
+表の温度・組成は計算設定と一致させ、上限を超えるE/Nでは停止します。
+`--min-td`、`--max-td`、`--points`、`--energy-max`、`--energy-cells` で生成条件を変更できます。
+10,000 Tdでは900 eV・1200セルと1800 eV・1700セルの比較で移動度が約7%、拡散係数が約8%異なります。高電界端は暫定値です。
 
-生成時の既定条件は300 K、N₂:O₂=80:20、0 Tdと0.01～2000 Tdの正の257点、450 eV・1200セルの二次エネルギー格子です。
-表の温度・組成は計算設定と一致させます。二体反応係数は気体セルの中心E/Nから線形補間し、局所数密度を用いて反応量を計算します。
-輸送では面のE/NからμN、セル中心のE/NからDNを補間し、1 atmの分子数密度Nで割ります。
-面のドリフト速度は法線方向の −μE で、拡散には両方向共通のスカラーDを使います。
-0 Tdでは二体反応係数を0とし、移動度と拡散係数は0 TdでのBOLOS解を使います。上限を超えるE/Nでは停止します。
-`--min-td`、`--max-td`、`--points`、`--energy-max`、`--energy-cells` で、使う断面積と電場範囲に合わせて生成条件を調整できます。
-
-反応は陽的に更新し、安定刻みの判定にも表の係数を使います。解離付着で生じる中性Oを追跡し、係数表モードでは `O0.csv` などに保存します。
-`run_config.json` には輸送係数の出所、反応方式、断面積・係数表・反応機構のSHA-256、生成条件を記録します。
-
-Py3BOLOS付属のPhelpsデータで検証しました。0 Tdではμ＝約7.90 m²/(V·s)、D＝約0.0360 m²/s、ドリフト速度は0 m/sでした。
-0 Tdと0.025～2000 Tdの11点で直接計算と比較し、表の補間差は移動度で最大2.02%、拡散係数で最大0.30%でした。
-同じ点で1e-20 m³/s以上の二体反応係数の補間差は最大1.01%でした。
-100・300 Tdの0次元で、Canteraの生成速度と密度更新を照合し、反応に伴う電荷・元素数の保存を確認しました。
+反応は陽的に更新し、刻みの判定には負イオンの消費も含めます。
+`species*.npz` には形式4の追加化学種N₂Oも保存します。
+`run_config.json` には断面積・係数表・反応機構のSHA-256と生成条件を記録します。
 
 ## 光電離
 
@@ -207,7 +198,7 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `rh.csv`・`zh.csv` | セル中心座標[m] |
 | `gas_mask.csv` | 気体・電極の区分 |
 | `ne*.csv` | 電子密度[m⁻³] |
-| `O*.csv`・`species*.npz` | 係数表モードの中性Oの密度CSVと全化学種の数密度[m⁻³]。NPZはCanteraの化学種名をキーとする(nr, nz)配列 |
+| `O*.csv`・`species*.npz` | 係数表モードの中性Oの密度CSVと全化学種の数密度[m⁻³]。NPZは化学種名をキーとする(nr, nz)配列 |
 | `Ex*.csv`・`Ey*.csv`・`absE*.csv` | 中心の換算電場[Td] |
 | `phi*.csv` | 総電位[V] |
 | `times.csv` | 両モードの出力番号・step・実時刻 |

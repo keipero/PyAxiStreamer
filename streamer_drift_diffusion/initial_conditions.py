@@ -136,10 +136,14 @@ def initialize_simulation(config=None):
     from .photoionization import PhotoionizationSolver
     arrays['photoionization'] = PhotoionizationSolver(arrays['grid'], arrays['gas_mask'], config)
     arrays['k1_o2'] = None
+    arrays['reaction_rates'] = None
     if config.chemistry_table is not None:
         from .plasma_chemistry import load_reaction_table
         arrays['chemistry'] = load_reaction_table(config.chemistry_table, config)
         arrays['k1_o2'] = np.zeros(arrays['gas_mask'].shape)
+        table = arrays['chemistry']
+        if table.mechanism is not None and table.mechanism.tabulated:
+            arrays['reaction_rates'] = np.zeros((table.rates.shape[1], *arrays['gas_mask'].shape))
     for field in fields(SimulationState):
         if field.name not in arrays:
             arrays[field.name] = np.zeros((config.nr, config.nz), dtype=np.float64)

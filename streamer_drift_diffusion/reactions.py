@@ -43,6 +43,9 @@ def calculate_reaction_coefficients(state):
     (0.0, 0.0, 0.0)
     """
     table = state.chemistry
+    if state.reaction_rates is not None:
+        state.reaction_rates[:, state.gas_mask] = table.sample(state.abs_e[state.gas_mask])
+        return
     if table is not None:
         rates = table.sample(state.abs_e[state.gas_mask])
         for target, rate in zip((state.k1, state.k1_o2, state.k2), rates):
@@ -141,7 +144,7 @@ def apply_reactions(state, config, *, dt):
         r2 = dt * state.k2 * state.o2 * state.ne
         r3 = dt * state.k3 * state.o2 * state.o2 * state.ne
         increments = r1n + r1o - r2 - r3, -r1n, -r1o - r2 - r3, r1n, r1o, r2, r3, r2
-    ne, n2, o2, n2p, o2p, om, o2m, o = increments
+    ne, n2, o2, n2p, o2p, om, o2m, o, *extra = increments
     photo = dt * state.photoionization.rate
     ne = ne + photo
     o2 = o2 - photo
@@ -154,3 +157,5 @@ def apply_reactions(state, config, *, dt):
     state.om[:] += om
     state.o2m[:] += o2m
     state.o[:] += o
+    if extra:
+        state.n2o[:] += extra[0]

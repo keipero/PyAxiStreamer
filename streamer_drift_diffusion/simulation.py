@@ -72,8 +72,11 @@ def prepare_step(state, config, time, *, waveform=None, verbose=True):
         calculate_electric_field(state, config, voltage=voltage)
         calculate_transport_coefficients(state, config)
         calculate_reaction_coefficients(state)
-        k_o2 = state.k1 if state.k1_o2 is None else state.k1_o2
-        impact = state.ne * (state.k1 * state.n2 + k_o2 * state.o2)
+        if state.reaction_rates is not None:
+            impact = state.chemistry.mechanism.impact_ionization(state)
+        else:
+            k_o2 = state.k1 if state.k1_o2 is None else state.k1_o2
+            impact = state.ne * (state.k1 * state.n2 + k_o2 * state.o2)
         state.photoionization.solve(impact)
     for name in ("rho", "phi", "ex", "ey", "abs_e", "vex", "vey", "k1", "k1_o2", "k2", "k3"):
         values = getattr(state, name)
