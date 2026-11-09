@@ -1,4 +1,5 @@
 """Helmholtz光電離の空間応答、粒子収支、フレーム出力を検証する。"""
+from dataclasses import replace
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,11 +18,41 @@ from streamer_drift_diffusion.timestepping import chemistry_limit
 class PhotoionizationTests(unittest.TestCase):
     """独立な積分核と局所粒子収支を基準にする。"""
 
+    def test_parallel_and_serial_components_match_and_pool_closes(self):
+        config = SimulationConfig(nr=8, nz=12, delta=1e-4)
+        grid = CylindricalGrid(config)
+        gas = np.ones(grid.shape, dtype=bool)
+        gas[0, -1] = False
+        parallel = PhotoionizationSolver(grid, gas, config)
+        serial = PhotoionizationSolver(grid, gas, replace(config, photoionization_workers=1))
+        self.addCleanup(parallel.close)
+        self.addCleanup(serial.close)
+        impact = np.zeros(grid.shape)
+        impact[0, 3] = 1e28
+        expected, components = serial.solve(impact, return_components=True)
+        actual, parallel_components = parallel.solve(impact, return_components=True)
+        assert_array_equal(actual, expected)
+        assert_array_equal(parallel_components, components)
+        pool = parallel._pool
+        self.assertIsNotNone(pool)
+        assert_array_equal(parallel.solve(impact), expected)
+        self.assertIs(parallel._pool, pool)
+        parallel.close()
+        self.assertIsNone(parallel._pool)
+        self.assertEqual(parallel._factors, ())
+        assert_array_equal(parallel.solve(impact), expected)
+
+    def test_rejects_invalid_photoionization_worker_count(self):
+        for workers in (0, 4, True, 1.5):
+            with self.subTest(workers=workers), self.assertRaisesRegex(ValueError, "photoionization_workers"):
+                initialize_simulation(SimulationConfig(nr=2, nz=3, photoionization_workers=workers))
+
     def test_point_source_matches_far_field_kernel_and_reuses_factors(self):
         """開放境界から離れた軸上で3項Green関数と比較する。"""
         config = SimulationConfig(nr=80, nz=160, delta=1e-4)
         grid = CylindricalGrid(config)
         solver = PhotoionizationSolver(grid, np.ones(grid.shape, dtype=bool), config)
+        self.addCleanup(solver.close)
         impact = np.zeros(grid.shape)
         center = config.nz // 2
         impact[0, center] = 1e28
@@ -48,6 +79,7 @@ class PhotoionizationTests(unittest.TestCase):
         impact = np.zeros(state.grid.shape)
         impact[0, 2] = 1e35
         solver = state.photoionization
+        self.addCleanup(solver.close)
         rate, components = solver.solve(impact, return_components=True)
         self.assertGreater(rate[0, 1], 0.)
         self.assertTrue((~state.gas_mask).any())
@@ -72,6 +104,7 @@ class PhotoionizationTests(unittest.TestCase):
             solver = state.photoionization
             self.assertGreater(float(solver.rate.max()), 0.)
             self.assertEqual(solver._factors, ())
+            self.assertIsNone(solver._pool)
             output = Path(folder)
             saved = np.loadtxt(output / "Sph1.csv").reshape(state.grid.shape)
             assert_allclose(saved, solver.rate, rtol=5e-7)

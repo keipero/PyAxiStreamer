@@ -77,7 +77,7 @@ class SimulationConfig:
     dt_min : float, optional
         適応候補刻みの停止下限 [s]。イベントへの安全な端数短縮は下限未満も許す。 Default: ``1e-18``.
     dt_safety_factor : float, optional
-        各安定条件へ掛ける安全係数 Default: ``0.5``.
+        各安定条件へ掛ける安全係数 Default: ``0.7``.
     dt_cfl_number : float, optional
         セルの流出率に対するCFL数 Default: ``0.8``.
     dt_chemistry_fraction : float, optional
@@ -100,6 +100,8 @@ class SimulationConfig:
 
     photoionization_efficiency : float, optional
         発光源の無次元係数。消光補正前の値で、範囲は(0, 1]、既定0.075。
+    photoionization_workers : int, optional
+        Helmholtz求解のスレッド数。1～3、既定3。
 
     Notes
     -----
@@ -143,7 +145,7 @@ class SimulationConfig:
     t_end: float = 5.001e-9 # 両モード共通の終了時刻 [s]
     dt_max: float | None = None # 適応刻みの上限 [s]。Noneならdtを使用。
     dt_min: float = 1e-18 # 安定性のためにこれ未満が必要なら停止 [s]
-    dt_safety_factor: float = 0.5 # 各安定条件へ掛ける安全係数
+    dt_safety_factor: float = 0.7 # 各安定条件へ掛ける安全係数
     dt_cfl_number: float = 0.8 # セルの流出率に対するCFL数
     dt_chemistry_fraction: float = 0.1 # 反応の生成・消費を制限する割合
     dt_growth_factor: float = 1.2 # 受理した刻みからの増加倍率の上限
@@ -154,6 +156,7 @@ class SimulationConfig:
     electron_diffusion: float = 0.0 # 従来モード用の一定電子拡散係数 [m²/s]。
     chemistry_table: str | Path | None = None
     photoionization_efficiency: float = 0.075
+    photoionization_workers: int = 3
 
 
 def molecular_density(config):

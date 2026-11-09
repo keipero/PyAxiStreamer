@@ -211,7 +211,7 @@ class DiffusionTests(unittest.TestCase):
             run_simulation(config, output_dir=directory, verbose=False)
             metadata = json.loads((Path(directory)/'run_config.json').read_text())
             self.assertEqual(metadata['config']['electron_diffusion'], .5)
-            self.assertEqual(metadata['transport_backend'], 'fipy')
+            self.assertEqual(metadata['transport_backend'], 'numba')
             self.assertEqual(metadata['transport_time_scheme'], 'explicit Euler')
             self.assertEqual(metadata['transport_advection_scheme'], 'van Leer')
             self.assertIn('fipy_version', metadata)
