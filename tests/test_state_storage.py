@@ -73,7 +73,7 @@ class StateStorageTests(unittest.TestCase):
         state = initialize_simulation(self.config())
         state.ne_var.setValue(np.arange(1., 7.))
         original = state.ne.copy()
-        transport = ElectronTransport(state, state.grid.spacing)
+        transport = ElectronTransport(state, state.grid.spacing, backend="fipy")
 
         def fail(**kwargs):
             """求解変数を破壊して失敗を模擬する。

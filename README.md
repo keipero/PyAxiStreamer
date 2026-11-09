@@ -1,7 +1,7 @@
 # ストリーマ放電シミュレーション
 
-軸対称r-z有限体積モデルです。Poisson方程式と電子移流拡散をFiPyで解き、反応・物理係数はNumPyで評価します。
-現在のバックエンドはSciPy、PoissonはLU分解を再利用する直接求解です。Numbaは不要です。
+軸対称r-z有限体積モデルです。Poisson方程式はFiPyで組み立て、電子移流拡散はNumbaで陽的に更新します。反応・物理係数はNumPyで評価します。
+Poissonと光電離ではSciPyのLU分解を再利用します。
 電子密度・電位はFiPy変数を正本とし、NumPy計算には2次元ビューを渡します。
 電子密度・電位の[状態管理の仕様・検証](FIPY_STATE_UNIFICATION.md)と、
 [SciPy LU再利用の仕様・検証](SCIPY_LU_REUSE.md)を参照してください。
@@ -80,7 +80,8 @@ python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-outp
 
 ### 電子輸送と反応
 
-`ElectronTransport`は同じメッシュ上でFiPyのVan Leer移流項と陽的拡散項を使います。
+`ElectronTransport`は同じメッシュ上でVan Leer移流と陽的拡散の面流束を計算し、セルの収支から密度を直接更新します。
+既定のNumbaカーネルは単一スレッドで動作し、初回にJITコンパイルします。FiPyの参照実装は `ElectronTransport(state, config.delta, backend="fipy")` で利用できます。
 気体セル間では、電極・外端近傍の勾配を気体側の片側差分で求め、軸近傍の半径方向勾配には軸対称性を反映します。
 移流の再構築面密度は旧セル密度の0～2倍に制限し、合算CFL上限にはこの流出上界を使います。
 気体間のDは調和平均、電極・外部境界は気体側Dと半セル距離で吸収します。外からの流入・電子放出は含めません。
@@ -88,7 +89,8 @@ python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-outp
 単独で更新する場合は`transport = ElectronTransport(state, config.delta)`を一度作り、`losses = transport.step(state, dt)`を呼びます。
 
 面分類・境界距離は輸送オブジェクトの初期化時に固定し、現在の速度・Dから作る係数は
-`transport.prepare(state)`へ集約しています。CFL判定、FiPyの吸収損失項、3区分の流出数が同じ係数を使います。
+`transport.prepare(state)`へ集約しています。Numbaでは面係数の生成とCFL集計もJITで実行します。
+CFL判定、吸収損失項、3区分の流出数が同じ係数を使います。
 時間ループでは`timestepping.timestep_limits(..., transport=transport)`で一度準備し、
 `advance_density(..., transport=transport, prepared=True)`で再試行にも再利用します。
 単独の`step()`は既定で係数を再評価します。手動で`prepared=True`を使う場合は、
@@ -140,6 +142,8 @@ BOLOSの輸送係数を使う形式2〜4では `electron_diffusion=0` としま�
 ## 光電離
 
 乾燥N₂/O₂混合気体に対して、ZheleznyakモデルをBourdonらの3項Helmholtz近似で常に評価します。
+最初のLU分解は順番に行い、各更新で3項の求解を並列実行します。
+`photoionization_workers`（CLIでは `--photoionization-workers`）は1～3で、既定は3です。1で逐次求解します。
 気体の初期組成にはN₂とO₂の両方が必要です。背景電離は独立した設定です。
 
 電子衝突電離の和に発光効率（範囲は (0, 1]、既定0.075）と消光補正（消光圧40 mbar）を掛けて発光源とします。
@@ -177,7 +181,7 @@ dt_minへの無条件な切上げは行いません。イベントまでの端�
 | `dt` | 固定幅・背景供給の基準幅、1e-12 s |
 | `dt_max` | 適応上限、省略時dt |
 | `dt_min` | 必要刻みの停止下限、1e-18 s |
-| `dt_safety_factor` | 共通の安全係数、0.5 |
+| `dt_safety_factor` | 共通の安全係数、0.7 |
 | `dt_cfl_number` | 合算流出対角へのCFL数、0.8 |
 | `dt_chemistry_fraction` | 反応割合上限、0.1 |
 | `dt_growth_factor` | 刻みの増加上限倍率、1.2 |
@@ -220,7 +224,7 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `simulation_types.py` | 計算設定と状態 |
 | `initial_conditions.py` | 設定検査、初期密度とFiPyソルバーの生成 |
 | `electrostatics.py` | FiPy Poisson、電荷源、換算電場、境界電位 |
-| `transport.py` | 共通の面係数・輸送CFL、FiPy電子輸送と吸収・流出数 |
+| `transport.py`、`_transport_kernel.py` | 共通の面係数・輸送CFL、電子輸送と吸収・流出数 |
 | `transport_coefficients.py` | 面の移動度・速度、中心のD |
 | `reactions.py` | 反応係数と密度更新 |
 | `kinetics.py` | Cantera機構の化学量論と格子上の質量作用則 |

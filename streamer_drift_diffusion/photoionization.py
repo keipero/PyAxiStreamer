@@ -1,4 +1,6 @@
 """乾燥N₂/O₂のZheleznyak光電離源を3項Helmholtz近似で求める。"""
+from concurrent.futures import ThreadPoolExecutor, wait
+
 import numpy as np
 from scipy.sparse import coo_matrix, diags
 from scipy.sparse.linalg import splu
@@ -20,7 +22,7 @@ class PhotoionizationSolver:
     gas : ndarray of bool
         気体セルのマスク。形状はgrid.shape。
     config : SimulationConfig
-        酸素モル分率と無次元の光電離効率。
+        酸素モル分率、無次元の光電離効率、求解に使うスレッド数。
 
     Attributes
     ----------
@@ -33,7 +35,8 @@ class PhotoionizationSolver:
     p_O2は1 atmと初期酸素モル分率で固定し、発光源Iには衝突消光を含める。
     軸は対称、電極と接地面ではS=0、外周・上端の開放面では
     ∂S/∂n + κ S = 0 とする。Robin条件は外部への指数減衰を仮定した近似。
-    行列は最初の非ゼロ源で分解し、以後は右辺のみを更新する。
+    行列は最初の非ゼロ源で逐次分解し、以後は右辺のみを更新する。
+    各分解の求解は独立に実行し、項はBourdonの表の順に加算する。
 
     Examples
     --------
@@ -55,6 +58,12 @@ class PhotoionizationSolver:
         # 40 mbarの消光圧を用いる。全圧は既存の気体密度モデルと同じ1 atm。
         self._yield = config.photoionization_efficiency * 4000. / (101325. + 4000.)
         self._factors = ()
+        workers = config.photoionization_workers
+        if (isinstance(workers, bool) or not isinstance(workers, (int, np.integer))
+                or not 1 <= workers <= len(self._weights)):
+            raise ValueError("photoionization_workers must be an integer from 1 to 3")
+        self._workers = int(workers)
+        self._pool = None
 
     def _factorize(self):
         """気体セルの有限体積行列を組み立て、各吸収項のLU分解を返す。
@@ -136,8 +145,16 @@ class PhotoionizationSolver:
         if not self._factors:
             self._factors = self._factorize()
         rhs = self._yield * self._volume * source
-        terms = (weight * factor.solve(rhs)
-                 for weight, factor in zip(self._weights, self._factors))
+        if self._workers == 1:
+            solutions = (factor.solve(rhs) for factor in self._factors)
+        else:
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(max_workers=self._workers)
+            futures = [self._pool.submit(factor.solve, rhs) for factor in self._factors]
+            # 失敗時もすべての求解が終了してから呼び出し側へ戻る。
+            wait(futures)
+            solutions = (future.result() for future in futures)
+        terms = (weight * solution for weight, solution in zip(self._weights, solutions))
         if return_components:
             terms = tuple(terms)
         values = sum(terms)
@@ -152,7 +169,7 @@ class PhotoionizationSolver:
         return self.rate
 
     def close(self):
-        """LU分解への参照を解放し、直近の光電離源を保持する。
+        """求解スレッドとLU分解を解放し、直近の光電離源を保持する。
 
         Examples
         --------
@@ -160,4 +177,7 @@ class PhotoionizationSolver:
 
             state.photoionization.close()
         """
+        if self._pool is not None:
+            self._pool.shutdown()
+            self._pool = None
         self._factors = ()

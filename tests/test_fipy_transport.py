@@ -19,6 +19,40 @@ def gas_state(nr=3, nz=4, spacing=1.):
 
 
 class FiPyTransportTests(unittest.TestCase):
+    def test_numba_matches_fipy_with_mixed_fluxes_and_electrode(self):
+        rng = np.random.default_rng(342)
+        jit_state = gas_state(7, 9, .3)
+        reference = gas_state(7, 9, .3)
+        for state in (jit_state, reference):
+            state.gas_mask[1, 3:5] = False
+            state.gas_mask[5:, 7:] = False
+        jit = ElectronTransport(jit_state, .3)
+        fipy = ElectronTransport(reference, .3, backend="fipy")
+        for sign in (1., -1.):
+            initial = np.exp(rng.uniform(-4., 4., jit_state.ne.shape))*jit_state.gas_mask
+            velocity_r = sign*rng.uniform(-2., 2., jit_state.vex.shape)
+            velocity_z = sign*rng.uniform(-2., 2., jit_state.vey.shape)
+            diffusion = rng.uniform(0., .4, jit_state.ne.shape)
+            diffusion[::3] = 0.
+            for state in (jit_state, reference):
+                state.ne[:] = initial
+                state.vex[:], state.vey[:], state.de[:] = velocity_r, velocity_z, diffusion
+            jit.prepare(jit_state)
+            fipy.prepare(reference)
+            for name in ("advection_rates", "diffusion_rates", "boundary_rates",
+                         "transport_limit", "diffusion_limit"):
+                assert_allclose(getattr(jit, name), getattr(fipy, name), rtol=1e-14, atol=0.)
+            dt = .95*jit.transport_limit
+            jit_loss = jit.step(jit_state, dt, prepared=True)
+            fipy_loss = fipy.step(reference, dt, prepared=True)
+            assert_allclose(jit_state.ne, reference.ne, rtol=3e-14, atol=1e-15)
+            assert_allclose(jit_loss, fipy_loss, rtol=1e-14)
+            assert_array_equal(jit_state.ne[~jit_state.gas_mask], 0.)
+            self.assertGreaterEqual(jit_state.ne.min(), 0.)
+            final = 2*np.pi*np.sum(jit_state.ne*jit_state.volume)
+            assert_allclose(final + jit_loss.sum(), 2*np.pi*np.sum(initial*jit_state.volume),
+                            rtol=1e-14)
+
     def test_prepared_limits_bound_actual_fipy_update(self):
         """合算CFLの上界と純拡散CFLの対角を、単位密度から検査する。"""
         state = gas_state()
@@ -291,7 +325,7 @@ class FiPyTransportTests(unittest.TestCase):
     def test_nonfinite_solver_result_is_not_committed(self):
         state = gas_state()
         state.ne[:] = 1.
-        operator = ElectronTransport(state, 1.)
+        operator = ElectronTransport(state, 1., backend="fipy")
 
         def corrupt(**kwargs):
             operator.density.setValue(np.nan)
@@ -303,6 +337,17 @@ class FiPyTransportTests(unittest.TestCase):
         # 失敗した内部変数を、次の試行ではstateから復元する。
         assert_array_equal(operator.step(state, .05), 0.)
         assert_allclose(state.ne, 1., rtol=1e-14)
+
+    def test_nonfinite_numba_result_is_not_committed(self):
+        state = gas_state()
+        state.ne[:] = 1.
+        operator = ElectronTransport(state, 1.)
+        corrupt = (np.full(state.ne.size, np.nan), np.zeros(3))
+        with patch('streamer_drift_diffusion.transport.transport_update', return_value=corrupt):
+            with self.assertRaisesRegex(FloatingPointError, 'Numba transport'):
+                operator.step(state, .1)
+        assert_array_equal(state.ne, 1.)
+        assert_array_equal(operator.step(state, .05), 0.)
 
     def test_invalid_velocity_and_geometry_fail_before_commit(self):
         state = gas_state()

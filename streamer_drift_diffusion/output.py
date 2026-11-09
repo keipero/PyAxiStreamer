@@ -335,7 +335,7 @@ class SimulationOutput:
                         "poisson_solver_suite": "scipy", "poisson_matrix_reused": True,
                         "poisson_factorization_reused": True,
                         "poisson_criterion": "max_abs(A*phi-b) / max_abs(b)",
-                        "transport_backend": "fipy", "transport_time_scheme": "explicit Euler",
+                        "transport_backend": "numba", "transport_time_scheme": "explicit Euler",
                         "transport_advection_scheme": "van Leer",
                         "fipy_version": fipy.__version__, "scipy_version": scipy.__version__,
                         "fipy_solver_suite": fipy.solvers.solver_suite,
