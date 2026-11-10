@@ -206,7 +206,7 @@ def _rate_evaluators(reactions, parsed, excluded):
 
 def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitrogen_fraction=.8,
                             energy_max=900., energy_cells=1200,
-                            mechanism_path=DRY_AIR_MECHANISM_PATH):
+                            mechanism_path=DRY_AIR_MECHANISM_PATH, include_collision_rates=False):
     """断面積データからPy3BOLOSの輸送係数と電子衝突反応係数を評価する。
 
     Parameters
@@ -225,6 +225,8 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
         二次格子のセル数。既定1200。
     mechanism_path : str or pathlib.Path, optional
         反応式と係数の参照先を定義するYAML。既定は同梱の乾燥空気機構。
+    include_collision_rates : bool, optional
+        N₂/O₂の励起・電離・付着の係数を断面積ファイルの過程番号付きで追加する。
 
     Returns
     -------
@@ -254,6 +256,7 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
     """
     try:
         from bolos import grid, parser, solver
+        from bolos.process import Process
     except ImportError as exc:
         raise RuntimeError("table generation requires keipero/Py3bolos in this environment") from exc
     from scipy.constants import Boltzmann, elementary_charge
@@ -290,6 +293,19 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
     mechanism_path = Path(mechanism_path)
     mechanism_contents, reactions, mechanism = load_mechanism_definition(mechanism_path)
     evaluators, indices = _rate_evaluators(reactions, parsed, excluded)
+    collision_channels = []
+    if include_collision_rates:
+        for index, collision in enumerate(parsed, 1):
+            if (collision["target"] in ("N2", "O2")
+                    and collision["kind"] in ("EXCITATION", "IONIZATION", "ATTACHMENT")):
+                scale = 1e-6 if index in excluded else 1.
+                process = Process(**collision)
+                evaluators.append(lambda solver, eedf, field, process=process, scale=scale:
+                                  scale * solver.rate(eedf, process))
+                collision_channels.append({
+                    "index": index, "target": collision["target"], "kind": collision["kind"],
+                    "threshold_ev": collision.get("threshold"),
+                })
     energy_grid = grid.QuadraticGrid(0., energy_max, energy_cells)
     boltzmann = solver.BoltzmannSolver(energy_grid)
     boltzmann.load_collisions([collision for _, collision in processes])
@@ -300,6 +316,7 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
     weights = np.sqrt(energy_grid.c)*energy_grid.d
     rates = []
     swarm = []
+    mean_energies = []
     max_negative = 0.
     fields = np.r_[0., fields]
     for field in fields:
@@ -318,17 +335,24 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
         if not np.all(np.isfinite(transport)) or min(transport) <= 0.:
             raise RuntimeError(f"invalid Py3BOLOS mobility or diffusion at {field:g} Td")
         swarm.append(transport)
-        coefficients = np.asarray([evaluate(boltzmann, positive/population, field)
+        eedf = positive/population
+        mean_energy = boltzmann.mean_energy(eedf)
+        if not np.isfinite(mean_energy) or mean_energy <= 0.:
+            raise ValueError(f"invalid mean electron energy at {field:g} Td")
+        mean_energies.append(float(mean_energy))
+        coefficients = np.asarray([evaluate(boltzmann, eedf, field)
                                    for evaluate in evaluators])
         if not np.all(np.isfinite(coefficients)) or np.any(coefficients < 0.):
             raise RuntimeError(f"invalid reaction rates at {field:g} Td")
         rates.append(coefficients.tolist())
         if field == 0.:
             distribution = boltzmann.maxwell(2.)
-    return {
-        "schema": 4, "field_td": fields.tolist(), "rates_si": rates, "mechanism": mechanism,
+    data = {
+        "schema": 4, "field_td": fields.tolist(), "rates_si": [row[:len(indices)] for row in rates],
+        "mechanism": mechanism,
         "mobility_n_per_m_v_s": [float(mobility) for mobility, _ in swarm],
         "diffusion_n_per_m_s": [float(diffusion) for _, diffusion in swarm],
+        "mean_energy_ev": mean_energies,
         "metadata": {
             "reactions": mechanism["reaction_ids"],
             "mechanism_file": mechanism_path.name,
@@ -343,6 +367,10 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
             "max_negative_eedf_population": max_negative,
         },
     }
+    if include_collision_rates:
+        data["collision_channels"] = collision_channels
+        data["collision_rates_si"] = [row[len(indices):] for row in rates]
+    return data
 
 
 def main(argv=None):
@@ -375,6 +403,7 @@ def main(argv=None):
     parser.add_argument("--energy-max", type=float, default=900.)
     parser.add_argument("--energy-cells", type=int, default=1200)
     parser.add_argument("--mechanism", type=Path, default=DRY_AIR_MECHANISM_PATH)
+    parser.add_argument("--include-collision-rates", action="store_true")
     args = parser.parse_args(argv)
     if not 0. < args.min_td < args.max_td < np.inf or args.points < 2:
         parser.error("require 0 < min-td < max-td and at least 2 points")
@@ -384,6 +413,7 @@ def main(argv=None):
             temperature=args.temperature, nitrogen_fraction=args.nitrogen_fraction,
             energy_max=args.energy_max, energy_cells=args.energy_cells,
             mechanism_path=args.mechanism,
+            include_collision_rates=args.include_collision_rates,
         )
         args.output.write_text(json.dumps(data, indent=2, allow_nan=False)+"\n", encoding="utf-8")
     except (OSError, ValueError, RuntimeError) as exc:

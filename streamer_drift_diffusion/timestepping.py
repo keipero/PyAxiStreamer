@@ -158,7 +158,7 @@ def validate_densities(state):
     >>> state = initialize_simulation(config)
     >>> validate_densities(state)
     """
-    for name in DENSITY_NAMES:
+    for name in getattr(state, "density_names", DENSITY_NAMES):
         density = getattr(state, name)
         if not np.all(np.isfinite(density)) or np.any(density < 0):
             raise TimestepError(f"invalid density: {name}")
@@ -382,7 +382,8 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
     transport = ElectronTransport(state, config.delta) if transport is None else transport
     if not prepared:
         transport.prepare(state)
-    saved = {name: getattr(state, name).copy() for name in DENSITY_NAMES}
+    density_names = getattr(state, "density_names", DENSITY_NAMES)
+    saved = {name: getattr(state, name).copy() for name in density_names}
     max_retries = config.max_step_retries if config.adaptive_timestep else 0
     for retries in range(max_retries + 1):
         try:
@@ -403,7 +404,7 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
             return dt, retries
         except (TimestepError, FloatingPointError) as exc:
             state.ne_var.setValue(saved['ne'].ravel(order='F'))
-            for name in DENSITY_NAMES[1:]:
+            for name in density_names[1:]:
                 getattr(state, name)[:] = saved[name]
             if retries == max_retries or dt * 0.5 < config.dt_min:
                 raise TimestepError(f"step rejected at dt={dt:.6e}: {exc}") from exc

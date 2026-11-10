@@ -97,8 +97,12 @@ class MassActionMechanism:
         mechanism = table.mechanism
     """
 
-    def __init__(self, data, *, tabulated=False):
+    def __init__(self, data, *, tabulated=False, additional_species=None):
         species = DRY_AIR_SPECIES_FIELDS if tabulated else SPECIES_FIELDS
+        if additional_species:
+            if not tabulated or species.keys() & additional_species.keys():
+                raise ValueError("additional species require a tabulated mechanism and unique names")
+            species = {**species, **{name: entry[0] for name, entry in additional_species.items()}}
         ids = data["reaction_ids"]
         if (data["species"] != list(species) or not ids
                 or any(not isinstance(name, str) or not name for name in ids)
@@ -126,6 +130,10 @@ class MassActionMechanism:
         atoms_and_charge = np.asarray(conserved)
         if tabulated:
             atoms_and_charge = np.column_stack((atoms_and_charge, (2, 1, 0)))
+        if additional_species:
+            atoms_and_charge = np.column_stack(
+                (atoms_and_charge, np.asarray([entry[1:] for entry in additional_species.values()]).T)
+            )
         if np.any(net @ atoms_and_charge.T != 0.):
             raise ValueError("chemistry mechanism does not conserve N, O, or charge")
         self._factors = tuple(_nonzero_terms(row) for row in orders)

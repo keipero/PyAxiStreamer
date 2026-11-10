@@ -158,4 +158,5 @@ def apply_reactions(state, config, *, dt):
     state.o2m[:] += o2m
     state.o[:] += o
     if extra:
-        state.n2o[:] += extra[0]
+        for name, increment in zip(state.chemistry.mechanism.density_names[-len(extra):], extra):
+            getattr(state, name)[:] += increment
