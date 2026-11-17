@@ -1,8 +1,6 @@
-"""FiPyによる総電位のPoisson求解、電荷源、換算電場。"""
+"""SciPy疎行列による総電位のPoisson求解、電荷源、換算電場。"""
 import math
 import numpy as np
-from fipy import CellVariable, FaceVariable, DiffusionTerm, ImplicitSourceTerm
-from fipy.solvers.scipy import LinearLUSolver
 from scipy.sparse.linalg import splu
 
 from .simulation_types import molecular_density
@@ -40,7 +38,7 @@ def boundary_values(state, voltage):
     0.0
     """
     grid = state.grid
-    result = np.full(grid.mesh.numberOfFaces, voltage, dtype=float)
+    result = np.full(grid.n_faces, voltage, dtype=float)
     result[grid.face_ids[0][-1]] = voltage*state.radial_boundary
     result[grid.face_ids[1][:, 0]] = 0.
     result[grid.face_ids[1][:, -1]] = voltage*state.upper_boundary
@@ -48,7 +46,7 @@ def boundary_values(state, voltage):
 
 
 class PoissonSolver:
-    """共有円筒メッシュ上で総電位を直接解くFiPy Poissonソルバー。
+    """共有円筒格子上で総電位を直接解くPoissonソルバー。
 
     Parameters
     ----------
@@ -61,29 +59,25 @@ class PoissonSolver:
 
     Attributes
     ----------
-    potential : fipy.CellVariable
-        FiPy面積・体積積分系で解くセル中心電位 [V]。
-    source : fipy.CellVariable
-        電荷源と境界源を合成した右辺のセル係数 [V/m²]。
+    potential : ndarray, shape (nr, nz)
+        セル中心電位の正本 [V]。state.phiと同じ配列。
+    matrix : scipy.sparse.csc_matrix
+        面積・体積積分系の左辺行列。初期化時に一度だけ組む。
     radial_boundary, upper_boundary : ndarray
         外周・上端の単位印加電圧に対する電位応答 [V/V]。
     boundary_rate : ndarray, shape (nfaces,)
         気体に接する境界面のA/d [m]。2πを省略する。
     diagonal : ndarray, shape (nr, nz)
         境界対角係数 [m⁻²]。金属セルは独立固定式の係数。
-    equation : fipy.terms.term.Term
-        FiPyで組み立てる総電位の方程式。
-    solver : fipy.solvers.LinearLUSolver
-        初回のSciPy行列組立に用いるFiPyソルバー。求解は保持したSuperLU分解で行う。
     tolerance, residual : float
         許容値と直近のmax(abs(A*phi-b))/max(abs(b))。
 
     Notes
     -----
     方程式は -laplacian(phi)=rho。rhoは電荷密度/epsilon0 [V/m²]。
-    気体間だけをDiffusionTermで結合し、境界は共有の面積・半セル距離から対角項と源を作る。
+    気体間だけをgrid.conductance_matrix()で結合し、境界は共有の面積・半セル距離から対角項と源を作る。
     金属セルは気体から切り離した独立固定式で、大きな罰則係数を使わない。
-    初回だけFiPyで行列を組み、SciPy SuperLUの分解を保持する。以後は右辺だけを更新する。
+    初回の求解でSciPy SuperLUの分解を作って保持し、以後は右辺だけを更新する。
     close()はLU分解を解放する。行列は保持し、次のsolve()で再分解できる。
     格子・電極形状・左辺係数は固定し、変更時には新しいPoissonSolverを作る。
     設定・気体マスクの検査はinitialize_simulation()が担当する。内部電極形状は求解中に変えない。
@@ -101,7 +95,7 @@ class PoissonSolver:
     0.0
     """
     def __init__(self, grid, gas, config):
-        """共有メッシュ上に境界対角・境界源とFiPy方程式を準備する。
+        """共有格子上に境界対角・境界源と左辺行列を準備する。
 
         Parameters
         ----------
@@ -123,8 +117,8 @@ class PoissonSolver:
         ...                           background_ionization=0., t_end=0.)
         >>> state = initialize_simulation(config)
         >>> solver = PoissonSolver(state.grid, state.gas_mask, config)
-        >>> solver.potential.mesh is state.grid.mesh
-        True
+        >>> solver.matrix.shape
+        (6, 6)
         """
         self.grid, self.gas = grid, gas.copy()
         self.radial_boundary = np.array([hyperbolic_curve(1., config.cathode_radius,
@@ -139,16 +133,10 @@ class PoissonSolver:
             self.insulating_faces[grid.face_ids[1][:, -1]] = True
         self.boundary_rate = grid.area/grid.distances(gas)*((low ^ high) & ~self.insulating_faces)
         self.diagonal = np.where(gas, grid.sum_faces(self.boundary_rate)/grid.volume, 1/grid.spacing**2)
-        self.potential = CellVariable(mesh=grid.mesh, value=0.)
-        self.source = CellVariable(mesh=grid.mesh, value=0.)
-        self.equation = (-DiffusionTerm(coeff=FaceVariable(mesh=grid.mesh, value=(low & high).astype(float)))
-                         + ImplicitSourceTerm(coeff=CellVariable(mesh=grid.mesh, value=self.diagonal.ravel(order='F')))
-                         == self.source)
-        self.equation.cacheMatrix()
-        self.equation.cacheRHSvector()
+        self.potential = np.zeros(grid.shape)
+        self.matrix = grid.conductance_matrix(grid.area/grid.spacing*(low & high),
+                                              (self.diagonal*grid.volume).ravel(order='F'))
         self.tolerance = config.poisson_tolerance
-        self.solver = LinearLUSolver(tolerance=self.tolerance, criterion='RHS')
-        self._matrix = None
         self._lu = None
         self.residual = 0.
 
@@ -201,11 +189,10 @@ class PoissonSolver:
 
         Notes
         -----
-        初回はFiPyのjustResidualVector()で組立だけを行い、二重にLU分解しない。
-        FiPy 4.0系のSciPy行列表現を使い、以後は保持した行列とSuperLUで直接解く。
+        初回だけ保持した行列をLU分解し、以後はその分解で直接解く。
         LUには初期推定が不要で、境界右辺に比べて小さい電荷変化も省略しない。
         残差の右辺が0の場合、分母下限にはnp.finfo(float).tinyを使う。
-        potentialはstate.phi_varと同じ正本。残差異常・求解例外では求解前の電位へ復元し、LUを解放する。
+        potentialはstate.phiと同じ正本。残差異常・求解例外では求解前の電位へ復元し、LUを解放する。
         退避コピーはこの呼出し中だけ保持し、解を別の状態配列へコピーしない。
 
         Examples
@@ -223,32 +210,25 @@ class PoissonSolver:
         """
         if not np.isfinite(voltage) or not np.all(np.isfinite(rho)):
             raise RuntimeError("nonfinite Poisson source or voltage")
-        previous = self.potential.value.copy()
+        previous = self.potential.copy()
         try:
-            self.source.setValue((np.where(self.gas, rho, 0.) + voltage*self.boundary_source).ravel(order='F'))
-            right_hand_side = self.source.value*self.grid.volume.ravel(order='F')
-            if not np.all(np.isfinite(right_hand_side)):
+            rhs = ((np.where(self.gas, rho, 0.) + voltage*self.boundary_source)*self.grid.volume).ravel(order='F')
+            if not np.all(np.isfinite(rhs)):
                 raise RuntimeError('nonfinite Poisson right-hand side')
-            if self._matrix is None:
-                self.potential.setValue(0.)
-                self.equation.justResidualVector(var=self.potential, solver=self.solver)
-                self._matrix = self.equation.matrix.matrix
             if self._lu is None:
-                self._lu = splu(self._matrix.tocsc())
-            rhs = self.equation.RHSvector
-            rhs[:] = right_hand_side
+                self._lu = splu(self.matrix)
             values = self._lu.solve(rhs)
-            residual = self._matrix@values-rhs
+            residual = self.matrix@values-rhs
             self.residual = float(np.max(np.abs(residual))/max(float(np.max(np.abs(rhs))), np.finfo(float).tiny))
             if not np.all(np.isfinite(values)) or not np.isfinite(self.residual) or self.residual > self.tolerance:
                 raise RuntimeError(f"Poisson solve failed residual check: {self.residual:.6e}")
-            self.potential.setValue(values)
-            self.potential.setValue(voltage, where=~self.gas.ravel(order='F'))
+            self.potential[:] = values.reshape(self.grid.shape, order='F')
+            self.potential[~self.gas] = voltage
         except Exception:
-            self.potential.setValue(previous)
+            self.potential[:] = previous
             self.close()
             raise
-        return self.potential.value.reshape(self.grid.shape, order='F')
+        return self.potential
 
     def close(self):
         """保持したLU分解を解放し、次の求解での再作成を許可する。
@@ -256,7 +236,7 @@ class PoissonSolver:
         Returns
         -------
         None
-            電位・FiPy行列を保持し、SciPy SuperLUへの参照だけを解除する。
+            電位・左辺行列を保持し、SciPy SuperLUへの参照だけを解除する。
 
         Notes
         -----

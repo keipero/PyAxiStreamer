@@ -2,11 +2,7 @@
 import math
 import numpy as np
 
-from fipy import (CellVariable, ExplicitDiffusionTerm, FaceVariable, TransientTerm,
-                  VanLeerConvectionTerm)
-from fipy.solvers import LinearLUSolver
-
-from ._transport_kernel import MAX_FACE_RATIO, face_fluxes, prepare_coefficients, transport_update
+from ._transport_kernel import prepare_coefficients, transport_update
 
 
 def _centered_stencil(gas):
@@ -18,47 +14,6 @@ def _centered_stencil(gas):
     return np.stack((radial.ravel(order="F"), axial.ravel(order="F")))
 
 
-class _VanLeer(VanLeerConvectionTerm):
-    """FiPyのVan Leer補正に、境界近傍の気体側勾配を組み込む。"""
-
-    def __init__(self, velocity, grid, gas):
-        super().__init__(coeff=velocity)
-        valid = _centered_stencil(gas)
-        faces = np.flatnonzero(grid.mesh.interiorFaces)
-        axis = np.argmax(grid.directions[:, faces], axis=0)
-        cells = np.asarray(grid.mesh.faceCellIDs[:, faces])
-        one_sided = grid.interior(gas)[faces] & ~valid[axis, cells]
-        self._boundary_indices = np.flatnonzero(one_sided.any(axis=0))
-        self._boundary_faces = faces[self._boundary_indices]
-        self._one_sided = one_sided[:, self._boundary_indices]
-        axis = axis[self._boundary_indices]
-        cells = cells[:, self._boundary_indices]
-        # 軸対称な二次分布で、最初のセル中心の勾配は隣接差分の半分。
-        on_axis = (axis == 0) & (cells % grid.shape[0] == 0)
-        self._slope_scale = np.where(on_axis, .5, 1.) / grid.spacing
-        self._area = grid.area[self._boundary_faces]
-        self._volume = grid.volume.ravel(order="F")[cells]
-
-    def _getWeight(self, var, transientGeomCoeff=None, diffusionGeomCoeff=None):
-        # 風上側は速度の符号だけで決まる。軸などのゼロ面で0/0を避ける。
-        return super()._getWeight(var, transientGeomCoeff=transientGeomCoeff,
-                                  diffusionGeomCoeff=None)
-
-    def _getOldAdjacentValues(self, oldArray, id1, id2, dt):
-        values = np.asarray(super()._getOldAdjacentValues(oldArray, id1, id2, dt))
-        old = np.asarray(oldArray.value)
-        center = np.stack((old[id1], old[id2]))
-        boundary = self._boundary_indices
-        boundary_center = center[:, boundary]
-        face_rate = np.abs(np.asarray(self._getGeomCoeff(oldArray))[self._boundary_faces])
-        # 欠けた側の差分を気体側の差分で補い、FiPyと同じ時間補正を使う。
-        slope = (boundary_center[::-1] - boundary_center) * self._slope_scale
-        one_sided = boundary_center + .5*slope*(self._volume - dt*face_rate)/self._area
-        values[:, boundary] = np.where(self._one_sided, one_sided, values[:, boundary])
-        # 流出面値の上界をCFL評価と共有する。
-        return tuple(np.clip(values, 0., MAX_FACE_RATIO*center))
-
-
 class ElectronTransport:
     """共有格子上の電子移流拡散と、吸収面の流出数を計算する。
 
@@ -68,8 +23,6 @@ class ElectronTransport:
         共有格子と計算配列。中心配列は(nr,nz)、面配列は方向別の全面形状。
     spacing : float
         セル幅 [m]。共有格子のspacingに一致させる。
-    backend : {"numba", "fipy"}, optional
-        既定はNumbaの面流束更新。検証にはFiPyの参照実装も使える。
 
     Raises
     ------
@@ -78,16 +31,10 @@ class ElectronTransport:
 
     Attributes
     ----------
-    grid, mesh : CylindricalGrid and fipy.meshes.mesh.Mesh
-        state.gridとそのメッシュへの参照。新たなメッシュは生成しない。
-    density : fipy.CellVariable
-        state.ne_varと同一の電子密度の正本 [m⁻³]。各試行の開始時の旧値を保持する。
-    velocity : fipy.FaceVariable
-        気体間面の速度ベクトル [m/s]。
-    diffusion : fipy.FaceVariable
-        気体間面の拡散係数 [m²/s]。
-    absorption : fipy.CellVariable
-        セルの吸収損失係数 [s⁻¹]。
+    grid : CylindricalGrid
+        state.gridへの参照。
+    density : ndarray, shape (nr, nz)
+        state.neと同一の電子密度配列 [m⁻³]。
     gas : ndarray of bool, shape (nr, nz)
         初期の気体マスクのコピー。形状変更を検出する。
     interior, boundary, low_gas : ndarray of bool, shape (nfaces,)
@@ -104,7 +51,8 @@ class ElectronTransport:
     Notes
     -----
     中心配列は(nr,nz)、vexは(nr+1,nz)、veyは(nr,nz+1)。deは等方拡散係数 [m²/s]。
-    Van Leer移流と拡散を同じ旧密度から陽的に更新する。
+    Van Leer（MC制限）移流と拡散を同じ旧密度からNumbaで陽的に更新する。
+    FiPyのVanLeerConvectionTermと同じ再構築式で、検証用のFiPy参照実装はtests/fipy_reference.pyにある。
     気体間Dは調和平均。電極・外端は気体側Dと半セル距離による吸収で、外から供給しない。
     1シミュレーションにつき一度作り、格子と電極形状は計算中に変更しない。
     流出数の累積は受理を判断する呼出側が担当する。
@@ -124,8 +72,8 @@ class ElectronTransport:
     >>> float(losses.sum())
     0.0
     """
-    def __init__(self, state, spacing, *, backend="numba"):
-        """共有メッシュを再利用し、輸送変数と陽的方程式を生成する。
+    def __init__(self, state, spacing):
+        """共有格子から、固定の面分類・距離・境界写しの対応を準備する。
 
         Parameters
         ----------
@@ -150,20 +98,19 @@ class ElectronTransport:
         ...                           background_ionization=0., t_end=0.)
         >>> state = initialize_simulation(config)
         >>> transport = ElectronTransport(state, config.delta)
-        >>> transport.mesh is state.grid.mesh
+        >>> transport.density is state.ne
         True
         """
         self.grid = state.grid
         if spacing != self.grid.spacing:
             raise ValueError("transport spacing must match the shared grid")
-        self.shape, self.mesh = self.grid.shape, self.grid.mesh
+        self.shape = self.grid.shape
         self.gas = state.gas_mask.copy()
         self.low_gas, self.high_gas = self.grid.adjacent(self.gas)
         self.interior = self.low_gas & self.high_gas
         self.boundary = self.low_gas ^ self.high_gas
         self.distance = self.grid.distances(self.gas)
-        self.density = state.ne_var
-        self.backend = backend
+        self.density = state.ne
         grid = self.grid
         self._gas_flat = self.gas.ravel(order="F")
         self._centered = _centered_stencil(self.gas)
@@ -178,19 +125,6 @@ class ElectronTransport:
                     copy = self.boundary[face] & self.interior[source] & (grid.area[face] > 0.)
                     self._boundary_sources[face[copy]] = source[copy]
         self._copy_faces = np.flatnonzero(self._boundary_sources >= 0)
-        if backend == "numba":
-            return
-        if backend != "fipy":
-            raise ValueError("unknown electron transport backend")
-        self.velocity = FaceVariable(mesh=self.mesh, rank=1, value=0.)
-        self.diffusion = FaceVariable(mesh=self.mesh, value=0.)
-        self.absorption = CellVariable(mesh=self.mesh, value=0.)
-        self.equation = (TransientTerm()
-                         + _VanLeer(self.velocity, self.grid, self.gas)
-                         - ExplicitDiffusionTerm(coeff=self.diffusion)
-                         + self.absorption * self.density.old)
-        self.solver = LinearLUSolver(tolerance=1e-12)
-
     def prepare(self, state):
         """現在の速度・Dから、CFL・輸送・境界流出が共有する面係数を準備する。
 
@@ -238,7 +172,7 @@ class ElectronTransport:
         0.0
         """
         grid = self.grid
-        if (state.ne_var is not self.density or state.grid is not grid
+        if (state.ne is not self.density or state.grid is not grid
                 or state.ne.shape != self.shape or not np.array_equal(state.gas_mask, self.gas)):
             raise ValueError("transport density, grid and electrode mask must not change")
         speed = grid.pack_faces(state.vex, state.vey)
@@ -247,34 +181,15 @@ class ElectronTransport:
         coefficient = np.where(self.gas, state.de, 0.)
         if np.any(~np.isfinite(coefficient)) or np.any(coefficient < 0):
             raise ValueError("diffusion coefficients must be finite and nonnegative")
-        if self.backend == "numba":
-            (self.advection_rates, self.diffusion_rates, self.boundary_rates,
-             transport_max, diffusion_max) = prepare_coefficients(
-                speed, coefficient.ravel(order="F"), self._gas_flat, *grid.face_ids,
-                grid.low, grid.high, self.low_gas, self.high_gas, self.interior,
-                self._coefficient_area, self._volume, self.distance,
-            )
-            self.transport_limit = 1./transport_max if transport_max > 0. else math.inf
-            self.diffusion_limit = 1./diffusion_max if diffusion_max > 0. else math.inf
-            return self
-        low, high = grid.adjacent(coefficient)
-        diffusion = low + high
-        np.divide(2*low*high, low+high, out=diffusion, where=self.interior & (diffusion > 0.))
-        self.diffusion_rates = diffusion*self._coefficient_area/self.distance
-        self.boundary_rates = (self._coefficient_area*np.maximum(np.where(self.low_gas, speed, -speed), 0.)
-                               + self.diffusion_rates)*self.boundary
-        diffusion_loss = grid.sum_faces(self.diffusion_rates)
-        # 内部面の再構築密度は最大で旧セル密度の2倍。吸収面は旧セル値を使う。
-        self.advection_rates = speed*self._coefficient_area
-        rate = self.advection_rates*np.where(self.interior, MAX_FACE_RATIO, 1.)
-        loss = grid.sum_faces(np.maximum(rate, 0.), np.maximum(-rate, 0.)) + diffusion_loss
-        maxima = (float(np.max((values/grid.volume)[self.gas])) for values in (loss, diffusion_loss))
-        self.transport_limit, self.diffusion_limit = (1/value if value > 0. else math.inf for value in maxima)
-        self.velocity.setValue(grid.directions*speed*self.interior)
-        self.diffusion.setValue(diffusion*self.interior)
-        self.absorption.setValue((grid.sum_faces(self.boundary_rates)/grid.volume).ravel(order='F'))
+        (self.advection_rates, self.diffusion_rates, self.boundary_rates,
+         transport_max, diffusion_max) = prepare_coefficients(
+            speed, coefficient.ravel(order="F"), self._gas_flat, *grid.face_ids,
+            grid.low, grid.high, self.low_gas, self.high_gas, self.interior,
+            self._coefficient_area, self._volume, self.distance,
+        )
+        self.transport_limit = 1./transport_max if transport_max > 0. else math.inf
+        self.diffusion_limit = 1./diffusion_max if diffusion_max > 0. else math.inf
         return self
-
     def step(self, state, dt, *, prepared=False):
         """旧密度で電子輸送を1回更新し、境界ごとの流出数を返す。
 
@@ -304,8 +219,7 @@ class ElectronTransport:
         Notes
         -----
         neだけをその場で更新し、electron_lossesは変更しない。負密度のクリップは行わない。
-        現在値はstate.ne_varと共有する。毎試行の開始時にupdateOld()で旧値を確保する。
-        Numbaでは有限性を検査してから結果を反映し、FiPyの求解失敗時は旧値へ復元する。
+        有限性を検査してから結果を反映するため、失敗時のneは更新前のまま。
         負密度を含む試行全体の棄却・密度の復元と安定刻みの選択は呼出側が担当する。
 
         Examples
@@ -326,38 +240,13 @@ class ElectronTransport:
         if not np.all(np.isfinite(state.ne)):
             raise FloatingPointError("nonfinite transport density")
         grid = self.grid
-        self.density.updateOld()
-        if self.backend == "numba":
-            new, losses = transport_update(
-                np.asarray(self.density.old.value), self._gas_flat, self._centered,
-                *grid.face_ids, grid.low, grid.high, self.low_gas, self.interior,
-                grid.area, self._volume, self.advection_rates, self.diffusion_rates,
-                self.boundary_rates, grid.boundary_kind, self._boundary_sources, grid.spacing, dt,
-            )
-            if not np.all(np.isfinite(new)) or not np.all(np.isfinite(losses)):
-                raise FloatingPointError("nonfinite Numba transport solution or boundary loss")
-            self.density.setValue(new)
-            return losses
-        old = self.density.old.value.reshape(self.shape, order='F')
-        low_density, high_density = grid.adjacent(old)
-        losses = 2*np.pi*dt*np.bincount(grid.boundary_kind,
-            weights=self.boundary_rates*np.where(self.low_gas, low_density, high_density), minlength=3)
-        try:
-            self.equation.solve(var=self.density, dt=dt, solver=self.solver)
-            faces = self._copy_faces
-            if faces.size:
-                flux = face_fluxes(np.asarray(self.density.old.value), self._centered,
-                    *grid.face_ids, grid.low, grid.high, self.low_gas, self.interior,
-                    grid.area, self._volume, self.advection_rates, self.diffusion_rates,
-                    self.boundary_rates, self._boundary_sources, grid.spacing, dt)
-                outward = np.where(self.low_gas[faces], flux[faces], -flux[faces])
-                cells = np.where(self.low_gas[faces], grid.low[faces], grid.high[faces])
-                correction = np.bincount(cells, weights=outward, minlength=self._volume.size)
-                self.density.setValue(self.density.value - dt*correction/self._volume)
-                losses += 2*np.pi*dt*np.bincount(grid.boundary_kind[faces], weights=outward, minlength=3)
-            if not np.all(np.isfinite(state.ne)) or not np.all(np.isfinite(losses)):
-                raise FloatingPointError("nonfinite FiPy transport solution or boundary loss")
-        except Exception:
-            self.density.setValue(self.density.old.value)
-            raise
+        new, losses = transport_update(
+            state.ne.ravel(order="F"), self._gas_flat, self._centered,
+            *grid.face_ids, grid.low, grid.high, self.low_gas, self.interior,
+            grid.area, self._volume, self.advection_rates, self.diffusion_rates,
+            self.boundary_rates, grid.boundary_kind, self._boundary_sources, grid.spacing, dt,
+        )
+        if not np.all(np.isfinite(new)) or not np.all(np.isfinite(losses)):
+            raise FloatingPointError("nonfinite Numba transport solution or boundary loss")
+        state.ne[:] = new.reshape(self.shape, order="F")
         return losses

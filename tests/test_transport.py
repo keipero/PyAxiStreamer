@@ -1,4 +1,6 @@
-"""FiPy輸送の幾何、独立した流束解、係数更新、数値例外と試行復元。"""
+"""輸送の幾何、FiPy参照実装との一致、係数更新、数値例外と試行復元。"""
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 import warnings
@@ -10,6 +12,8 @@ from streamer_drift_diffusion import SimulationConfig, initialize_simulation, ru
 from streamer_drift_diffusion.reactions import apply_reactions
 from streamer_drift_diffusion.timestepping import TimestepError, advance_density, timestep_limits
 from streamer_drift_diffusion.transport import ElectronTransport
+
+from fipy_reference import FiPyElectronTransport, fipy_mesh
 
 
 def gas_state(nr=3, nz=4, spacing=1.):
@@ -27,7 +31,7 @@ class FiPyTransportTests(unittest.TestCase):
             state.gas_mask[1, 3:5] = False
             state.gas_mask[5:, 7:] = False
         jit = ElectronTransport(jit_state, .3)
-        fipy = ElectronTransport(reference, .3, backend="fipy")
+        fipy = FiPyElectronTransport(reference, .3)
         for sign in (1., -1.):
             initial = np.exp(rng.uniform(-4., 4., jit_state.ne.shape))*jit_state.gas_mask
             velocity_r = sign*rng.uniform(-2., 2., jit_state.vex.shape)
@@ -182,11 +186,11 @@ class FiPyTransportTests(unittest.TestCase):
                     run_simulation(config, write_output=False, verbose=False)
                 self.assertEqual(prepared.call_count, 3)
 
-    def test_transport_reuses_shared_mesh_and_geometry_arrays(self):
+    def test_transport_reuses_shared_grid_and_geometry_arrays(self):
         state = gas_state(5, 7, .1)
-        with patch('streamer_drift_diffusion.grid.CylindricalGrid2D', side_effect=AssertionError('rebuilt mesh')):
-            operator = ElectronTransport(state, .1)
-        self.assertIs(operator.mesh, state.grid.mesh)
+        operator = ElectronTransport(state, .1)
+        self.assertIs(operator.grid, state.grid)
+        self.assertIs(operator.density, state.ne)
         self.assertIs(state.volume, state.grid.volume)
         self.assertTrue(np.shares_memory(state.sr, state.grid.areas[0]))
         self.assertTrue(np.shares_memory(state.sz, state.grid.areas[1]))
@@ -196,14 +200,14 @@ class FiPyTransportTests(unittest.TestCase):
         grid = state.grid
         radial, axial = grid.face_ids
         assert_array_equal(np.sort(np.concatenate((radial.ravel(), axial.ravel()))),
-                           np.arange(grid.mesh.numberOfFaces))
+                           np.arange(grid.n_faces))
         for i, j in np.ndindex(radial.shape):
             self.assertEqual(grid.low[radial[i, j]], (i-1)+3*j if i else -1)
             self.assertEqual(grid.high[radial[i, j]], i+3*j if i < 3 else -1)
         for i, j in np.ndindex(axial.shape):
             self.assertEqual(grid.low[axial[i, j]], i+3*(j-1) if j else -1)
             self.assertEqual(grid.high[axial[i, j]], i+3*j if j < 5 else -1)
-        values = np.arange(grid.mesh.numberOfFaces)
+        values = np.arange(grid.n_faces)
         assert_array_equal(grid.pack_faces(*grid.split_faces(values)), values)
 
     def test_shared_boundary_labels_and_distances_include_internal_electrode(self):
@@ -218,17 +222,31 @@ class FiPyTransportTests(unittest.TestCase):
         assert_array_equal(grid.boundary_kind[grid.face_ids[1][:, -1]], 2)
         assert_array_equal(grid.boundary_kind[grid.face_ids[0][-1]], 2)
         assert_array_equal(grid.area[grid.face_ids[0][0]], 0.)
-        assert_array_equal(grid.sum_faces(np.ones(grid.mesh.numberOfFaces)), 4.)
+        assert_array_equal(grid.sum_faces(np.ones(grid.n_faces)), 4.)
 
-    def test_cylindrical_cell_mapping_and_volume(self):
+    def test_grid_matches_fipy_cylindrical_mesh(self):
         state = gas_state(5, 7, .1)
-        operator = ElectronTransport(state, .1)
-        assert_allclose(operator.mesh.cellVolumes, state.volume.ravel(order='F'),
-                        rtol=1e-14, atol=0.)
-        assert_allclose(np.asarray(operator.mesh.cellCenters[0]).reshape((5, 7), order='F'),
+        grid, mesh = state.grid, fipy_mesh(state.grid)
+        assert_array_equal(np.asarray(mesh.cellVolumes), state.volume.ravel(order='F'))
+        assert_allclose(np.asarray(mesh.cellCenters[0]).reshape((5, 7), order='F'),
                         np.broadcast_to(state.rh[:, None], (5, 7)), rtol=1e-14)
-        assert_allclose(np.asarray(operator.mesh.cellCenters[1]).reshape((5, 7), order='F'),
+        assert_allclose(np.asarray(mesh.cellCenters[1]).reshape((5, 7), order='F'),
                         np.broadcast_to(state.zh[None, :], (5, 7)), rtol=1e-14)
+        self.assertEqual(grid.n_faces, mesh.numberOfFaces)
+        normals = np.asarray(mesh.faceNormals)
+        assert_array_equal(grid.directions, np.abs(normals))
+        ids = np.ma.filled(mesh.faceCellIDs, -1)
+        negative = normals.sum(axis=0) < 0
+        assert_array_equal(grid.low, np.where(negative, ids[1], ids[0]))
+        assert_array_equal(grid.high, np.where(negative, ids[0], ids[1]))
+        assert_allclose(grid.area, np.asarray(mesh.faceCenters[0])*grid.spacing, rtol=1e-14, atol=0.)
+        assert_array_equal(grid.boundary_kind != 0, np.asarray(mesh.exteriorFaces))
+
+    def test_package_runs_without_importing_fipy(self):
+        code = ("import sys; from streamer_drift_diffusion import SimulationConfig, run_simulation; "
+                "run_simulation(SimulationConfig(nr=4, nz=6, delta=1e-4, electrode_gap=3e-4, t_end=2e-12), "
+                "write_output=False, verbose=False); assert 'fipy' not in sys.modules")
+        subprocess.run([sys.executable, "-c", code], check=True)
 
     def test_harmonic_diffusion_transfers_exact_cell_particle_number(self):
         state = gas_state()
@@ -292,7 +310,7 @@ class FiPyTransportTests(unittest.TestCase):
         assert_allclose(state.ne, saved, rtol=1e-14, atol=1e-16)
         assert_array_equal(losses, 0.)
 
-    def test_failed_reaction_resynchronizes_fipy_old_values_and_losses(self):
+    def test_failed_reaction_restores_density_and_losses(self):
         config = SimulationConfig(nr=5, nz=7, delta=1e-4, electrode_gap=3e-4,
                                   voltage=0., background_ionization=0., electron_diffusion=.5, adaptive_timestep=True)
         state = initialize_simulation(config)
@@ -303,7 +321,6 @@ class FiPyTransportTests(unittest.TestCase):
         reference.ne[:] = state.ne
         reference.vex[:], reference.vey[:] = state.vex, state.vey
         operator = ElectronTransport(state, config.delta)
-        original = state.ne.copy()
         calls = []
 
         def fail_first(current, current_config, *, dt):
@@ -320,15 +337,15 @@ class FiPyTransportTests(unittest.TestCase):
         self.assertEqual(actual, config.dt/2)
         assert_allclose(state.ne, reference.ne, rtol=1e-14)
         assert_allclose(state.electron_losses, expected_loss, rtol=1e-14)
-        assert_array_equal(np.asarray(operator.density.old).reshape(state.ne.shape, order='F'), original)
+        self.assertIs(operator.density, state.ne)
 
     def test_nonfinite_solver_result_is_not_committed(self):
         state = gas_state()
         state.ne[:] = 1.
-        operator = ElectronTransport(state, 1., backend="fipy")
+        operator = FiPyElectronTransport(state, 1.)
 
         def corrupt(**kwargs):
-            operator.density.setValue(np.nan)
+            operator.fipy_density.setValue(np.nan)
 
         with patch.object(operator.equation, 'solve', side_effect=corrupt):
             with self.assertRaisesRegex(FloatingPointError, 'FiPy transport'):

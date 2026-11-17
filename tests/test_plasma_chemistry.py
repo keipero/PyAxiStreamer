@@ -67,7 +67,7 @@ class ChemistryTests(unittest.TestCase):
         state = initialize_simulation(self.config)
         gas = state.gas_mask
         state.abs_e[gas] = 100.
-        state.ne_var.setValue(np.where(gas, 1e18, 0.).ravel(order="F"))
+        state.ne[:] = np.where(gas, 1e18, 0.)
         state.n2[gas], state.o2[gas] = 1e20, 2e20
         state.n2p[gas], state.o2p[gas] = 2e18, 0.
         calculate_reaction_coefficients(state)
@@ -121,7 +121,7 @@ class ChemistryTests(unittest.TestCase):
         phase.TPX = 300., 10., {"N2": .3, "O2": .6, "Electron": .01, "N2+": .02}
         initial = phase.concentrations * ct.avogadro
         mask = state.gas_mask
-        state.ne_var.setValue(np.where(mask, initial[phase.species_index("Electron")], 0.).ravel(order="F"))
+        state.ne[:] = np.where(mask, initial[phase.species_index("Electron")], 0.)
         for name, species in zip(DENSITY_NAMES[1:], mechanism["species"][1:]):
             getattr(state, name)[mask] = initial[phase.species_index(species)]
         state.abs_e[mask] = 100.

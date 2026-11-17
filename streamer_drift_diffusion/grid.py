@@ -1,10 +1,10 @@
-"""共有の円筒メッシュ、全面の隣接関係・幾何係数・境界分類。"""
+"""共有の円筒格子、全面の隣接関係・幾何係数・境界分類と有限体積行列。"""
 import numpy as np
-from fipy import CylindricalGrid2D, serialComm
+from scipy.sparse import coo_matrix
 
 
 class CylindricalGrid:
-    """軸対称r-zのFiPyメッシュと、全処理で共有する面情報を生成する。
+    """軸対称r-zの等間隔構造格子と、全処理で共有する面情報を生成する。
 
     Parameters
     ----------
@@ -13,10 +13,10 @@ class CylindricalGrid:
 
     Attributes
     ----------
-    mesh : fipy.meshes.mesh.Mesh
-        一度だけ生成するCylindricalGrid2D。
     shape : tuple of int
         セル配列形状(nr,nz)。
+    n_cells, n_faces : int
+        セル数と全面数。
     spacing : float
         両方向共通のセル幅 [m]。
     volume : ndarray, shape (nr, nz)
@@ -32,7 +32,7 @@ class CylindricalGrid:
     directions : ndarray, shape (2, nfaces)
         面が属する座標方向の単位ベクトル。符号は常に座標増加方向。
     face_ids : tuple of ndarray of int
-        半径・軸方向の全面配列からFiPy面番号への対応表。
+        半径・軸方向の全面配列から面番号への対応表。
     boundary_kind : ndarray of int, shape (nfaces,)
         内部面0、接地面1、その他外部面2。実際の吸収面は気体マスクで別途判定する。
     r, z : ndarray
@@ -42,7 +42,8 @@ class CylindricalGrid:
 
     Notes
     -----
-    FiPyのx=r、y=z。セル配列は(nr,nz)で、FiPyセル番号にはFortran順で対応する。
+    セル配列は(nr,nz)で、セル番号i+nr*jはFortran順に対応する。
+    面番号はFiPyのGrid2Dと同じで、軸方向面i+nr*jの後に半径面i+(nr+1)*jが続く。
     面値の正方向は座標増加方向。low/highがその両側セルで、領域外は-1。
     面積・体積は共通係数2πを省略し、粒子数・電荷の集計時に一度だけ掛ける。
     格子形状は計算中に変更しない。気体・電極の区別は各操作のgas引数で与える。
@@ -75,32 +76,32 @@ class CylindricalGrid:
         >>> grid.shape
         (2, 3)
         """
-        self.shape, self.spacing = (config.nr, config.nz), config.delta
-        self.mesh = CylindricalGrid2D(nr=config.nr, nz=config.nz, dr=config.delta,
-                                      dz=config.delta, communicator=serialComm)
-        centers = np.asarray(self.mesh.cellCenters).reshape((2, *self.shape), order='F')
-        self.rh, self.zh = centers[0, :, 0], centers[1, 0, :]
-        self.volume = np.asarray(self.mesh.cellVolumes).reshape(self.shape, order='F')
-        normals = np.asarray(self.mesh.faceNormals)
-        self.directions = np.abs(normals)
-        ids = np.ma.filled(self.mesh.faceCellIDs, -1)
-        negative = normals.sum(axis=0) < 0
-        self.low = np.where(negative, ids[1], ids[0])
-        self.high = np.where(negative, ids[0], ids[1])
+        nr, nz, d = config.nr, config.nz, config.delta
+        self.shape, self.spacing = (nr, nz), d
+        self.n_cells, n_axial = nr*nz, nr*(nz+1)
+        self.n_faces = n_axial + (nr+1)*nz
+        self.r, self.z = np.arange(nr)*d, np.arange(nz)*d
+        self.rh, self.zh = (np.arange(nr)+.5)*d, (np.arange(nz)+.5)*d
+        self.volume = np.repeat(self.rh[:, None]*(d*d), nz, axis=1)
+        i, j = np.arange(nr+1)[:, None], np.arange(nz)[None, :]
+        radial = n_axial + i + (nr+1)*j
+        k, m = np.arange(nr)[:, None], np.arange(nz+1)[None, :]
+        axial = k + nr*m
+        self.face_ids = (radial, axial)
+        cell = lambda a, b, inside: np.where(inside, a + nr*b, -1)
+        self.low = np.empty(self.n_faces, dtype=int)
+        self.high = np.empty(self.n_faces, dtype=int)
+        self.low[radial], self.high[radial] = cell(i-1, j, i > 0), cell(i, j, i < nr)
+        self.low[axial], self.high[axial] = cell(k, m-1, m > 0), cell(k, m, m < nz)
         self.valid_low, self.valid_high = self.low >= 0, self.high >= 0
-        r, z = np.asarray(self.mesh.faceCenters)
-        self.area = r * self.spacing
-        self.boundary_kind = np.where(self.mesh.exteriorFaces, np.where(z == 0., 1, 2), 0)
-        self.face_ids = (np.empty((config.nr+1, config.nz), dtype=int),
-                         np.empty((config.nr, config.nz+1), dtype=int))
-        for axis, mapping in enumerate(self.face_ids):
-            face = np.flatnonzero(self.directions[axis])
-            coords = np.asarray(self.mesh.faceCenters)[:, face]/self.spacing
-            indices = np.rint(coords - .5*(1-self.directions[:, face])).astype(int)
-            mapping[indices[0], indices[1]] = face
+        self.directions = np.zeros((2, self.n_faces))
+        self.directions[0, radial], self.directions[1, axial] = 1., 1.
+        self.area = np.empty(self.n_faces)
+        self.area[radial], self.area[axial] = np.broadcast_to(i*d*d, radial.shape), self.rh[:, None]*d
+        exterior = ~(self.valid_low & self.valid_high)
+        self.boundary_kind = np.where(exterior, 2, 0)
+        self.boundary_kind[axial[:, 0]] = 1
         self.areas = self.split_faces(self.area)
-        self.r = r[self.face_ids[0][:-1, 0]]
-        self.z = z[self.face_ids[1][0, :-1]]
 
     def pack_faces(self, radial, axial):
         """半径・軸方向の全面配列を、共有メッシュの面番号順へ変換する。
@@ -136,7 +137,7 @@ class CylindricalGrid:
         """
         if radial.shape != self.face_ids[0].shape or axial.shape != self.face_ids[1].shape:
             raise ValueError("velocities must have radial (nr+1,nz) and axial (nr,nz+1) face shapes")
-        result = np.empty(self.mesh.numberOfFaces, dtype=np.result_type(radial, axial))
+        result = np.empty(self.n_faces, dtype=np.result_type(radial, axial))
         result[self.face_ids[0]], result[self.face_ids[1]] = radial, axial
         return result
 
@@ -146,7 +147,7 @@ class CylindricalGrid:
         Parameters
         ----------
         values : array_like, shape (nfaces,)
-            FiPy面番号順の値。単位は呼出側の量に従う。
+            面番号順の値。単位は呼出側の量に従う。
 
         Returns
         -------
@@ -165,7 +166,7 @@ class CylindricalGrid:
         >>> state = initialize_simulation(config)
         >>> grid = state.grid
         >>> import numpy as np
-        >>> radial, axial = grid.split_faces(np.arange(grid.mesh.numberOfFaces))
+        >>> radial, axial = grid.split_faces(np.arange(grid.n_faces))
         >>> radial.shape, axial.shape
         ((3, 3), (2, 4))
         """
@@ -286,13 +287,66 @@ class CylindricalGrid:
         >>> state = initialize_simulation(config)
         >>> grid = state.grid
         >>> import numpy as np
-        >>> float(grid.sum_faces(np.ones(grid.mesh.numberOfFaces)).max())
+        >>> float(grid.sum_faces(np.ones(grid.n_faces)).max())
         4.0
         """
         high_values = low_values if high_values is None else high_values
-        low = np.bincount(self.low[self.valid_low], weights=low_values[self.valid_low], minlength=self.mesh.numberOfCells)
-        high = np.bincount(self.high[self.valid_high], weights=high_values[self.valid_high], minlength=self.mesh.numberOfCells)
+        low = np.bincount(self.low[self.valid_low], weights=low_values[self.valid_low], minlength=self.n_cells)
+        high = np.bincount(self.high[self.valid_high], weights=high_values[self.valid_high], minlength=self.n_cells)
         return (low+high).reshape(self.shape, order='F')
+
+    def conductance_matrix(self, conductance, diagonal, cells=None):
+        """面コンダクタンスとセル対角から、対称な有限体積行列を組む。
+
+        Parameters
+        ----------
+        conductance : ndarray, shape (nfaces,)
+            内部面の結合係数（例: 面積/距離）。0の面と外部面は結合しない。
+        diagonal : ndarray, shape (ncells,)
+            対象セルの対角への追加値。cells指定時はその対象セルだけの長さ。
+            Dirichlet境界・吸収・体積項など、面結合以外の寄与を与える。
+        cells : ndarray of bool, shape (nr, nz), optional
+            未知数にするセル。Noneなら全セル。行列の行はFortran順に詰める。
+
+        Returns
+        -------
+        scipy.sparse.csc_matrix
+            対角に結合係数の和とdiagonal、非対角に-conductanceを持つ行列。
+            -∇·(c∇u)の体積積分形で、splu()へそのまま渡せる。
+
+        Raises
+        ------
+        ValueError
+            結合する面が対象外のセルに接する、またはdiagonalの長さが不正。
+
+        Notes
+        -----
+        2πは省略した面積・体積の規約に従う。Dirichlet面の寄与は呼出側がdiagonalと右辺へ入れる。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig
+        >>> import numpy as np
+        >>> grid = CylindricalGrid(SimulationConfig(nr=2, nz=1))
+        >>> conductance = np.where(grid.valid_low & grid.valid_high, 1., 0.)
+        >>> grid.conductance_matrix(conductance, np.zeros(2)).toarray().tolist()
+        [[1.0, -1.0], [-1.0, 1.0]]
+        """
+        flat = np.ones(self.n_cells, dtype=bool) if cells is None else np.asarray(cells).ravel(order='F')
+        index = np.full(self.n_cells, -1)
+        index[flat] = np.arange(np.count_nonzero(flat))
+        size = np.count_nonzero(flat)
+        if np.shape(diagonal) != (size,):
+            raise ValueError("diagonal must have one value per unknown cell")
+        faces = np.flatnonzero(self.valid_low & self.valid_high & (conductance != 0.))
+        left, right = index[self.low[faces]], index[self.high[faces]]
+        if np.any(left < 0) or np.any(right < 0):
+            raise ValueError("coupled faces must connect unknown cells")
+        values, cell = conductance[faces], np.arange(size)
+        return coo_matrix(
+            (np.r_[-values, -values, values, values, diagonal],
+             (np.r_[left, right, left, right, cell], np.r_[right, left, left, right, cell])),
+            shape=(size, size)).tocsc()
 
 
 def initialize_grid(config):

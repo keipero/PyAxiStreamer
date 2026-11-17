@@ -6,7 +6,6 @@ import json
 from contextlib import ExitStack
 
 import numpy as np
-import fipy
 import scipy
 
 from .kinetics import DRY_AIR_SPECIES_FIELDS, SPECIES_FIELDS
@@ -331,14 +330,13 @@ class SimulationOutput:
             settings["chemistry_table"] = str(self.config.chemistry_table)
         (self.directory / "run_config.json").write_text(
             json.dumps({"config": settings, "numpy_version": np.__version__,
-                        "poisson_backend": "fipy", "poisson_solver": "SuperLU",
+                        "poisson_backend": "scipy.sparse", "poisson_solver": "SuperLU",
                         "poisson_solver_suite": "scipy", "poisson_matrix_reused": True,
                         "poisson_factorization_reused": True,
                         "poisson_criterion": "max_abs(A*phi-b) / max_abs(b)",
                         "transport_backend": "numba", "transport_time_scheme": "explicit Euler",
                         "transport_advection_scheme": "van Leer",
-                        "fipy_version": fipy.__version__, "scipy_version": scipy.__version__,
-                        "fipy_solver_suite": fipy.solvers.solver_suite,
+                        "scipy_version": scipy.__version__,
                         "transport_boundary": ("zero normal gradient of electron flux; zero radial flux on axis"
                             if self.config.flux_neumann_boundaries else "half-cell absorption sink; no inflow"),
                         "model": "staggered-v1", "electrode_boundary": "staircase Dirichlet",
@@ -508,8 +506,7 @@ class SimulationOutput:
 
         Notes
         -----
-        FiPyのメッシュ・方程式・CellVariableは保存せず、ndarray属性とne・phiの2次元値だけを含める。
-        ne_var・phi_varはその名前で保存せず、従来どおりne・phiという数値配列を保存する。
+        LU分解などのソルバ・格子オブジェクトは保存せず、ndarray属性だけを含める。
 
         Examples
         --------
@@ -529,7 +526,6 @@ class SimulationOutput:
         (self.directory / "failure.json").write_text(
             json.dumps({"step": step, "time_s": time, "error": str(exc)}, indent=2), encoding="utf-8")
         np.savez_compressed(self.directory / "failure_state.npz",
-                            ne=self.state.ne, phi=self.state.phi,
                             **{field.name: getattr(self.state, field.name) for field in fields(self.state)
                                if isinstance(getattr(self.state, field.name), np.ndarray)})
 

@@ -214,8 +214,7 @@ class DiffusionTests(unittest.TestCase):
             self.assertEqual(metadata['transport_backend'], 'numba')
             self.assertEqual(metadata['transport_time_scheme'], 'explicit Euler')
             self.assertEqual(metadata['transport_advection_scheme'], 'van Leer')
-            self.assertIn('fipy_version', metadata)
-            self.assertIn('fipy_solver_suite', metadata)
+            self.assertNotIn('fipy_version', metadata)
             with (Path(directory)/'timestep_history.csv').open() as history:
                 rows = list(csv.DictReader(history))
             self.assertTrue(rows)

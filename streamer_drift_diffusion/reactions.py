@@ -119,7 +119,6 @@ def apply_reactions(state, config, *, dt):
     共通のadvance_density()から、輸送後の電子密度に適用する。
     反応係数の再計算、電荷源・電位・電場の更新、
     負密度の補正や反応量の制限は行わない。
-    電子密度はne_var.setValue()で正本を更新し、FiPyの派生式のキャッシュにも変更を通知する。
     他の密度はNumPy配列をその場で更新する。
 
     Examples
@@ -149,7 +148,7 @@ def apply_reactions(state, config, *, dt):
     ne = ne + photo
     o2 = o2 - photo
     o2p = o2p + photo
-    state.ne_var.setValue((state.ne + (ne + background)).ravel(order='F'))
+    state.ne[:] = state.ne + (ne + background)
     state.n2[:] += n2
     state.o2[:] += o2
     state.n2p[:] += n2p + config.nitrogen_fraction * background
