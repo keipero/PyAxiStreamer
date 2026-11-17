@@ -157,6 +157,9 @@ class SimulationConfig:
     chemistry_table: str | Path | None = None
     photoionization_efficiency: float = 0.075
     photoionization_workers: int = 3
+    positive_ion_mobility: float = 0.0  # 1.5D軸方向イオン移動度 [m²/(V s)]。
+    negative_ion_mobility: float = 0.0
+    flux_neumann_boundaries: bool = False  # 添付図の外周電位・電子流束境界条件
 
 
 def molecular_density(config):

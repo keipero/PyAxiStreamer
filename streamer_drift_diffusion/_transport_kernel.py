@@ -51,10 +51,10 @@ def prepare_coefficients(speed, coefficient, gas, radial, axial, low, high,
 
 
 @njit(cache=True)
-def transport_update(old, gas, centered, radial, axial, low, high, low_gas,
-                     interior, area, volume, advection, diffusion, absorption,
-                     boundary_kind, spacing, dt):
-    """旧密度から新密度と、吸収境界を通過した電子数を返す。"""
+def face_fluxes(old, centered, radial, axial, low, high, low_gas,
+                interior, area, volume, advection, diffusion, absorption,
+                boundary_sources, spacing, dt):
+    """正の座標方向を正とする、面積を掛けた電子流束を返す。"""
     nr, nz = radial.shape[0] - 1, axial.shape[1] - 1
     # FiPyと同じ、面の算術平均と面積から求めるGauss勾配。
     gradient = np.zeros((2, old.size))
@@ -72,7 +72,6 @@ def transport_update(old, gas, centered, radial, axial, low, high, low_gas,
                 gradient[1, cell] = (upper - lower)/volume[cell]
 
     flux = np.zeros(area.size)
-    losses = np.zeros(3)
     for face in range(area.size):
         if interior[face]:
             left, right = low[face], high[face]
@@ -103,8 +102,28 @@ def transport_update(old, gas, centered, radial, axial, low, high, low_gas,
             donor = low[face] if low_gas[face] else high[face]
             rate = absorption[face]*old[donor]
             flux[face] = rate if low_gas[face] else -rate
-            losses[boundary_kind[face]] += rate
 
+    for face in range(boundary_sources.size):
+        source = boundary_sources[face]
+        if source >= 0:
+            # コピーするのは単位面積当たりの流束。円筒面積は境界面で評価する。
+            flux[face] = flux[source]*area[face]/area[source]
+    return flux
+
+
+@njit(cache=True)
+def transport_update(old, gas, centered, radial, axial, low, high, low_gas,
+                     interior, area, volume, advection, diffusion, absorption,
+                     boundary_kind, boundary_sources, spacing, dt):
+    """旧密度から新密度と、境界を通過した符号付き電子数を返す。"""
+    flux = face_fluxes(old, centered, radial, axial, low, high, low_gas,
+                       interior, area, volume, advection, diffusion, absorption,
+                       boundary_sources, spacing, dt)
+    losses = np.zeros(3)
+    for face in range(area.size):
+        if not interior[face]:
+            losses[boundary_kind[face]] += flux[face] if low_gas[face] else -flux[face]
+    nr, nz = radial.shape[0] - 1, axial.shape[1] - 1
     new = old.copy()
     for j in range(nz):
         for i in range(nr):

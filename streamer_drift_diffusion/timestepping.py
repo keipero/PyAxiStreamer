@@ -197,13 +197,15 @@ def dielectric_limit(state, config):
     inf
     """
     maximum_mobility = max(float(np.max(state.mobility_r)), float(np.max(state.mobility_z)))
-    if maximum_mobility == 0.:
-        return math.inf
     electrons = np.where(state.gas_mask, state.ne, 0.)
     density = np.maximum(*state.grid.adjacent(electrons))
     density[state.grid.area == 0.] = 0.
     mobility = state.grid.pack_faces(state.mobility_r, state.mobility_z)
-    maximum = float(np.max(np.where(mobility > 0., mobility, maximum_mobility) * density))
+    mobility_density = np.where(mobility > 0., mobility, maximum_mobility) * density
+    for field, charge, ion_mobility in getattr(state, "ion_mobilities", ()):
+        ions = np.maximum(*state.grid.adjacent(getattr(state, field)))
+        mobility_density += abs(charge) * ion_mobility * ions
+    maximum = float(np.max(mobility_density))
     maximum *= config.elementary_charge / config.vacuum_permittivity
     return 1. / maximum if maximum > 0 else math.inf
 

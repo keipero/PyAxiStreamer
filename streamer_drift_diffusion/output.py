@@ -339,7 +339,8 @@ class SimulationOutput:
                         "transport_advection_scheme": "van Leer",
                         "fipy_version": fipy.__version__, "scipy_version": scipy.__version__,
                         "fipy_solver_suite": fipy.solvers.solver_suite,
-                        "transport_boundary": "half-cell absorption sink; no inflow",
+                        "transport_boundary": ("zero normal gradient of electron flux; zero radial flux on axis"
+                            if self.config.flux_neumann_boundaries else "half-cell absorption sink; no inflow"),
                         "model": "staggered-v1", "electrode_boundary": "staircase Dirichlet",
                         "field_layout": "cell-centered Ex/Ey/absE; complete face fields and velocities in state",
                         "field_unit": "Td",
@@ -354,7 +355,8 @@ class SimulationOutput:
                         "chemistry_table_metadata": None if chemistry is None else {
                             **chemistry.metadata, "max_field_td": float(chemistry.field_td[-1]),
                         },
-                        "outer_potential": "analytic Dirichlet voltage at outer faces",
+                        "outer_potential": ("zero normal gradient at upper and radial outer faces"
+                            if self.config.flux_neumann_boundaries else "analytic Dirichlet voltage at outer faces"),
                         "output_index": "frame", "field_and_density_times": "time_s"}, indent=2), encoding="utf-8")
         try:
             self.times_stream = self.stack.enter_context(open(self.directory / "times.csv", "w", newline="", encoding="utf-8"))

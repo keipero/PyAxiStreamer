@@ -132,7 +132,12 @@ class PoissonSolver:
         self.upper_boundary = np.array([hyperbolic_curve(1., config.cathode_radius,
             config.electrode_gap, r, config.nz*config.delta) for r in grid.rh])
         low, high = grid.adjacent(gas)
-        self.boundary_rate = grid.area/grid.distances(gas)*(low ^ high)
+        self.flux_neumann_boundaries = config.flux_neumann_boundaries
+        self.insulating_faces = np.zeros_like(low)
+        if self.flux_neumann_boundaries:
+            self.insulating_faces[grid.face_ids[0][-1]] = True
+            self.insulating_faces[grid.face_ids[1][:, -1]] = True
+        self.boundary_rate = grid.area/grid.distances(gas)*((low ^ high) & ~self.insulating_faces)
         self.diagonal = np.where(gas, grid.sum_faces(self.boundary_rate)/grid.volume, 1/grid.spacing**2)
         self.potential = CellVariable(mesh=grid.mesh, value=0.)
         self.source = CellVariable(mesh=grid.mesh, value=0.)
@@ -430,7 +435,8 @@ def calculate_electric_field(state, config, *, voltage=None):
     Notes
     -----
     面法線電場はPoissonの有限体積係数と同じ距離・境界電位を使う。
-    軸は法線電場0。電極・接地・上端・外周は半セル幅のDirichlet面。
+    軸は法線電場0。電極・接地は半セル幅のDirichlet面。
+    flux_neumann_boundariesでは上端と半径方向外周の法線電場も0。
     中心成分は対向する2面の算術平均で、中心abs_eはその2成分から求める。
     電極内部の面電場・中心電場は0、気体・電極間の法線電場は保持する。
     等間隔格子を対象とする。電場の単位は全てTd。
@@ -455,7 +461,7 @@ def calculate_electric_field(state, config, *, voltage=None):
     low, high = grid.adjacent(state.phi)
     low, high = np.where(low_gas, low, boundary), np.where(high_gas, high, boundary)
     field = -(high-low)/(grid.distances(gas)*scale)
-    field *= (low_gas | high_gas) & (grid.area > 0.)
+    field *= (low_gas | high_gas) & (grid.area > 0.) & ~state.poisson.insulating_faces
     er, ez = state.er_face, state.ez_face
     er[:], ez[:] = grid.split_faces(field)
     state.ex[:] = .5 * (er[:-1] + er[1:]) * gas
