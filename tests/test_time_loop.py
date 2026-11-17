@@ -1,6 +1,5 @@
 """固定／適応の共通時計・出力と、固定刻みの停止方針を検証する。"""
 import contextlib
-import csv
 from dataclasses import replace
 import io
 from pathlib import Path
@@ -13,14 +12,10 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
 from streamer_drift_diffusion.__main__ import main
+from streamer_drift_diffusion.output import open_failure, open_fields, open_history
 from streamer_drift_diffusion.simulation import prepare_step
 from streamer_drift_diffusion.timestepping import advance_density, DENSITY_NAMES, TimestepError
 from streamer_drift_diffusion.transport import ElectronTransport
-
-
-def rows(path):
-    with path.open(encoding='utf-8', newline='') as stream:
-        return list(csv.DictReader(stream))
 
 
 class TimeLoopTests(unittest.TestCase):
@@ -35,15 +30,12 @@ class TimeLoopTests(unittest.TestCase):
                 config = self.config(adaptive_timestep=adaptive)
                 folder = Path(temporary)/str(adaptive)
                 state = run_simulation(config, output_dir=folder, verbose=False)
-                frames = rows(folder/'times.csv')
-                assert_allclose([float(r['time_s']) for r in frames],
-                                [0., 1.3e-12, 2.6e-12, 3.5e-12], rtol=1e-15, atol=0.)
-                for frame in frames:
-                    self.assertEqual(frame['time_s'], frame['field_time_s'])
-                    density = np.loadtxt(folder/f"ne{frame['frame']}.csv")
-                    expected = config.background_ionization*float(frame['time_s'])/config.dt
-                    assert_allclose(density, expected, rtol=1e-6, atol=0.)
-                assert_array_equal(np.loadtxt(folder/'ne0.csv'), 0.)
+                fields = open_fields(folder).load()
+                assert_allclose(fields.time, [0., 1.3e-12, 2.6e-12, 3.5e-12], rtol=1e-15, atol=0.)
+                for time in fields.time.values:
+                    expected = config.background_ionization*time/config.dt
+                    assert_allclose(fields.ne.sel(time=time), expected, rtol=1e-13, atol=0.)
+                assert_array_equal(fields.ne.isel(time=0), 0.)
                 assert_allclose(state.ne, config.background_ionization*3.5, rtol=1e-15)
                 answers.append(state.ne.copy())
                 with self.assertRaises(FileExistsError):
@@ -54,14 +46,13 @@ class TimeLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             run_simulation(self.config(), output_dir=folder, verbose=False)
-            history = rows(folder/'timestep_history.csv')
-            self.assertTrue(any(float(r['dt_s']) < 1e-12*(1-1e-12) for r in history))
-            for row in history:
-                self.assertEqual(int(row['retries']), 0)
-                self.assertLessEqual(float(row['dt_s']), 1e-12*(1+1e-12))
-                self.assertIn(row['limiting'], ('fixed', 'output', 't_end'))
-                if float(row['dt_s']) < 1e-12*(1-1e-12):
-                    self.assertIn(row['limiting'], ('output', 't_end'))
+            history = open_history(folder).load()
+            dt, limiting = history.dt.values, history.limiting.values
+            self.assertTrue(np.any(dt < 1e-12*(1-1e-12)))
+            assert_array_equal(history.retries, 0)
+            self.assertTrue(np.all(dt <= 1e-12*(1+1e-12)))
+            self.assertLessEqual(set(limiting), {'fixed', 'output', 't_end'})
+            self.assertLessEqual(set(limiting[dt < 1e-12*(1-1e-12)]), {'output', 't_end'})
 
     def test_fixed_failure_restores_all_densities_without_halving(self):
         config = self.config()
@@ -89,10 +80,10 @@ class TimeLoopTests(unittest.TestCase):
                 with self.assertRaisesRegex(TimestepError, 'fixed dt exceeds'):
                     run_simulation(config, output_dir=folder, verbose=False)
                 self.assertFalse(stepped.called)
-            self.assertTrue((folder/'failure.json').exists())
-            with np.load(folder/'failure_state.npz') as snapshot:
-                assert_array_equal(snapshot['electron_losses'], 0.)
-            self.assertEqual(len(rows(folder/'timestep_history.csv')), 0)
+            failure = open_failure(folder).load()
+            self.assertIn('fixed dt exceeds', failure.attrs['error'])
+            assert_array_equal(failure.electron_losses, 0.)
+            self.assertEqual(open_history(folder).sizes['step'], 0)
 
     def test_fixed_final_fields_are_at_end_time(self):
         config = self.config(nmax=1e17, voltage=500., t_end=2e-12)
@@ -110,9 +101,9 @@ class TimeLoopTests(unittest.TestCase):
                 voltage_mode='impulse', voltage_waveform_file=str(waveform), background_ionization=0.)
             folder = Path(temporary)/'output'
             run_simulation(config, output_dir=folder, verbose=False)
-            history = rows(folder/'timestep_history.csv')
-            assert_allclose([float(r['time_s']) for r in history], [1e-12, 2e-12, 3e-12], rtol=1e-14, atol=0.)
-            self.assertEqual([r['limiting'] for r in history], ['waveform', 'waveform', 't_end'])
+            history = open_history(folder).load()
+            assert_allclose(history.time, [1e-12, 2e-12, 3e-12], rtol=1e-14, atol=0.)
+            self.assertEqual(history.limiting.values.tolist(), ['waveform', 'waveform', 't_end'])
 
     def test_zero_duration_writes_only_initial_frame_in_both_modes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -122,9 +113,8 @@ class TimeLoopTests(unittest.TestCase):
                     run_simulation(self.config(t_end=0., adaptive_timestep=adaptive),
                                    output_dir=folder, verbose=False)
                     self.assertFalse(stepped.called)
-                self.assertEqual(len(rows(folder/'times.csv')), 1)
-                self.assertEqual(rows(folder/'timestep_history.csv'), [])
-                self.assertFalse((folder/'ne1.csv').exists())
+                self.assertEqual(open_fields(folder).sizes['time'], 1)
+                self.assertEqual(open_history(folder).sizes['step'], 0)
 
     def test_common_cli_and_removed_step_options(self):
         with patch('streamer_drift_diffusion.__main__.run_simulation') as run:

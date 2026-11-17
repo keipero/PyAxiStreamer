@@ -10,7 +10,7 @@ from streamer_drift_diffusion import (
     SimulationConfig, SimulationState, initialize_simulation, run_simulation,
     hyperbolic_curve, ElectronTransport, load_voltage_waveform, applied_voltage,
 )
-from streamer_drift_diffusion.output import write_c_matrix
+from streamer_drift_diffusion.output import open_fields
 from streamer_drift_diffusion.reactions import apply_reactions
 
 
@@ -145,17 +145,14 @@ class SimulationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             applied_voltage(SimulationConfig(), np.nan)
 
-    def test_csv_order_format_and_update_count(self):
+    def test_output_frames_and_update_count(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            write_c_matrix(directory / "order.csv", np.array([[1., 2.], [3., 4.]]))
-            self.assertEqual((directory / "order.csv").read_bytes(),
-                             b"1.000000e+00\n2.000000e+00\n3.000000e+00\n4.000000e+00\n")
-            (directory / "order.csv").unlink()
             final = run_simulation(self.small_config(output_interval=2e-12, t_end=4e-12), output_dir=directory, verbose=False)
-            self.assertTrue((directory / "ne0.csv").exists())
-            self.assertTrue((directory / "ne2.csv").exists())
-            self.assertFalse((directory / "ne3.csv").exists())
+            fields_ = open_fields(directory).load()
+            assert_allclose(fields_.time, [0., 2e-12, 4e-12], rtol=1e-15, atol=0.)
+            assert_array_equal(fields_.ne.isel(time=-1), final.ne)
+            assert_array_equal(fields_.gas_mask, final.gas_mask)
             self.assertTrue(np.all(np.isfinite(final.ne)))
             self.assertTrue(np.all(final.ne >= 0))
             missing = directory / "not_created"

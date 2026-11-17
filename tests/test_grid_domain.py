@@ -1,12 +1,12 @@
 """電極を含む領域、Poisson境界、有限体積輸送の収支を検証する。"""
 from dataclasses import replace
-import csv
 import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
 
 import numpy as np
+from streamer_drift_diffusion.output import open_failure, open_fields, open_history
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
@@ -145,12 +145,10 @@ class GridDomainTests(unittest.TestCase):
         config = self.config(adaptive_timestep=True, t_end=2e-12, voltage=-500., output_interval=1e-12)
         with tempfile.TemporaryDirectory() as directory:
             state = run_simulation(config, output_dir=directory, verbose=False)
-            mask = np.loadtxt(Path(directory)/'gas_mask.csv').reshape(state.ne.shape)
-            assert_array_equal(mask, state.gas_mask)
-            with (Path(directory)/'timestep_history.csv').open() as history:
-                rows = list(csv.DictReader(history))
-            self.assertTrue(rows)
-            self.assertIn('electrode_electron_loss', rows[-1])
+            assert_array_equal(open_fields(directory).gas_mask, state.gas_mask)
+            history = open_history(directory).load()
+            self.assertGreater(history.sizes['step'], 0)
+            assert_allclose(history.electrode_electron_loss[-1], state.electron_losses[0], rtol=1e-15)
             assert_array_equal(state.ne[~state.gas_mask], 0.)
             self.assertTrue(np.all(np.isfinite(state.phi)))
 

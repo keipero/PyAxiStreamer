@@ -7,6 +7,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 import numpy as np
+from streamer_drift_diffusion.output import open_failure, open_fields, open_history
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, ElectronTransport
@@ -129,11 +130,12 @@ class StateStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with SimulationOutput(temporary, config, state) as output:
                 output.save_failure(0, 0., RuntimeError('example'))
-            with np.load(Path(temporary)/'failure_state.npz', allow_pickle=False) as archive:
-                assert_array_equal(archive['ne'], state.ne)
-                assert_array_equal(archive['phi'], state.phi)
-                for name in archive.files:
-                    self.assertFalse(archive[name].dtype.hasobject)
+            archive = open_failure(temporary).load()
+            self.assertEqual(archive.attrs['error'], 'example')
+            assert_array_equal(archive['ne'], state.ne)
+            assert_array_equal(archive['phi'], state.phi)
+            for name in archive.data_vars:
+                self.assertFalse(archive[name].dtype.hasobject)
 
 
 if __name__ == '__main__':

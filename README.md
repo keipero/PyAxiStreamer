@@ -28,7 +28,7 @@ python -m streamer_drift_diffusion --nr=12 --nz=16 --delta=1e-4 --electrode-gap=
 # インパルス波形
 python -m streamer_drift_diffusion --voltage-mode=impulse --impulse-peak=5000 --output=outputdata_impulse
 
-# 適応刻み。固定／適応とも出力先は既存CSVのないフォルダを指定する
+# 適応刻み。固定／適応とも出力先はfields.zarrのないフォルダを指定する
 python -m streamer_drift_diffusion --adaptive-timestep --t-end=5.001e-9 --output-interval=1e-10 --output=outputdata_adaptive
 ```
 
@@ -134,7 +134,7 @@ BOLOSの輸送係数を使う形式2〜4では `electron_diffusion=0` としま�
 10,000 Tdでは900 eV・1200セルと1800 eV・1700セルの比較で移動度が約7%、拡散係数が約8%異なります。高電界端は暫定値です。
 
 反応は陽的に更新し、刻みの判定には負イオンの消費も含めます。
-`species*.npz` には形式4の追加化学種N₂Oも保存します。
+`fields.zarr` には形式4の追加化学種N₂O（`n2o`）も保存します。
 `run_config.json` には断面積・係数表・反応機構のSHA-256と生成条件を記録します。
 
 ## 光電離
@@ -154,7 +154,7 @@ BOLOSの輸送係数を使う形式2〜4では `electron_diffusion=0` としま�
 原論文の3項フィットの範囲は酸素分圧と光の飛行距離の積で1〜150 Torr cmです。
 境界が発光域に近い条件では、計算領域を変えて光電離源の境界依存性を確認できます。
 共有格子の有限体積行列を各項について1回分解し、以後は右辺だけを更新します。
-`Sph*.csv` に生成源 [m⁻³ s⁻¹] を電場・密度と同じフレーム番号で保存します。
+`fields.zarr` の `photoionization` に生成源 [m⁻³ s⁻¹] を電場・密度と同じ時刻で保存します。
 
 ## 時間刻みと出力時刻
 
@@ -171,7 +171,7 @@ dt_minへの無条件な切上げは行いません。イベントまでの端�
 受理した更新数が`max_steps`に達し、終了時刻へ到達していなければ失敗として停止します。
 
 旧`max_step`・`write_every`・`adaptive_max_steps`と、CLIの`--steps`・`--write-every`・`--adaptive-max-steps`は廃止しました。
-旧`max_step=N`と同じ計算時間は`t_end=(N+1)*dt`です。ただしファイル番号は出力番号へ変わり、0番は未更新の初期状態です。
+旧`max_step=N`と同じ計算時間は`t_end=(N+1)*dt`です。出力の最初のフレーム（time=0）は未更新の初期状態です。
 刻みの分割や保存時刻が変わる条件では、旧計算との数値一致を自動的に保証しません。
 
 | 設定 | 内容・既定値 |
@@ -192,27 +192,32 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 
 ## 保存形式と可視化
 
-物理量は1値1行、rの添字が外側・zの添字が内側、`%e`の小数点以下6桁・LF改行です。
-`Ex`は中心の半径方向、`Ey`は中心の軸方向の換算電場です。
+出力はxarrayで扱えるZarr形式です。出力フォルダには次のファイルを作ります。
 
 | ファイル | 内容 |
 |---|---|
-| `rh.csv`・`zh.csv` | セル中心座標[m] |
-| `gas_mask.csv` | 気体・電極の区分 |
-| `ne*.csv` | 電子密度[m⁻³] |
-| `O*.csv`・`species*.npz` | 係数表モードの中性Oの密度CSVと全化学種の数密度[m⁻³]。NPZは化学種名をキーとする(nr, nz)配列 |
-| `Ex*.csv`・`Ey*.csv`・`absE*.csv` | 中心の換算電場[Td] |
-| `phi*.csv` | 総電位[V] |
-| `times.csv` | 両モードの出力番号・step・実時刻 |
-| `timestep_history.csv` | 両モードの刻み・制約・流出収支 |
-| `run_config.json` | 両モードの設定・ライブラリ版・SciPy疎行列/SuperLU・行列と分解の再利用 |
-| `failure.json`・`failure_state.npz` | 両モードの停止診断。NPZは数値配列のみ |
+| `fields.zarr` | 次元`(time, r, z)`の場。全化学種の密度`ne`・`n2`・`o2`・`n2p`・`o2p`・`om`・`o2m`・`o`・`n2o`[m⁻³]、総電位`phi`[V]、中心の換算電場`ex`・`ey`・`abs_e`[Td]、光電離源`photoionization`[m⁻³ s⁻¹]。座標は`time`[s]・`r`・`z`（セル中心[m]）と`step`・`dt`。静的な`gas_mask`・`volume`（2πを省略）も含む |
+| `history.zarr` | 次元`(step,)`の受理更新ごとの刻み・各制約・支配条件`limiting`・再試行数・電子数・電荷・流出収支 |
+| `run_config.json` | 設定・ライブラリ版・数値手法の説明。`fields.zarr`の属性`run_config`にも同じ内容を保存 |
+| `failure.zarr` | 停止時だけ作る診断。状態の全数値配列（中心は`(r, z)`、面は`(r_face, z)`・`(r, z_face)`）と、属性`step`・`time`・`error` |
+
+`fields.zarr`は出力時刻ごとにtime方向へ追記するので、計算が途中で止まってもそれまでのフレームを読めます。
+出力先に`fields.zarr`がすでにあれば、計算条件の混在を防ぐため停止します。
+
+```python
+from streamer_drift_diffusion.output import open_fields, open_history
+
+fields = open_fields("outputdata_adaptive")   # xarray.Dataset（遅延読込み）
+fields.ne.sel(time=1e-9, method="nearest").plot(x="r", y="z")
+fields.abs_e.isel(r=0).plot(x="time", y="z")   # 軸上のストリーク図
+history = open_history("outputdata_adaptive")
+history.dt.plot()
+```
 
 保存済み結果は`notebooks/`の描画Notebook、`notebooks/animate_abs_ez.py`で参照できます。
 `notebooks/plot_axial_field_profiles.ipynb` は同じ時刻と半径の電場・化学種密度を並べて表示します。
-旧出力は保存済みの `ne*.csv`・`O*.csv` を使い、全化学種を表示する場合は計算を再実行します。
-入力フォルダを計算結果に合わせ、両モードとも`times.csv`を残してください。番号から時刻を推測しないでください。
-過去の固定出力にtimes.csvがない場合に限り、描画側のdtを旧計算条件に合わせます。
+CSV出力（`ne*.csv`・`times.csv`など）は廃止しました。旧形式の保存済みフォルダは描画Notebookでは読めないため、必要なら計算を再実行してください。
+`tests/validate_c_*.py`・`tests/report_c_validation.py`は、旧CSV出力とC版を比べた履歴用の道具としてそのまま残しています。
 
 ## コード構成
 
@@ -229,7 +234,7 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `timestepping.py` | 安定刻み、共通のadvance_density()、試行の受理・復元 |
 | `simulation.py` | 固定／適応の共通時間ループと同時刻の電場・係数準備 |
 | `voltage_waveforms.py` | DC・インパルス入力、補間・単位換算 |
-| `output.py` | CSV・メタデータ・停止診断 |
+| `output.py` | xarray・Zarrの場・刻み履歴・停止診断とその読込み |
 
 ## 検証
 
@@ -255,7 +260,7 @@ python -m unittest discover -s tests
 
 `tests/poisson_reference.py`の独立した小格子直接解と比較し、`tests/fipy_reference.py`でFiPyの格子・Poisson行列・Van Leer輸送とも一致を確認します。
 既知の放物線解、正負電圧、離散Gauss則、微小電荷変化、非有限入力・残差異常、
-輸送の粒子収支、Gaussian格子収束、時間精度、試行の復元、CSV・CLI・波形も検証対象です。
+輸送の粒子収支、Gaussian格子収束、時間精度、試行の復元、Zarr出力・CLI・波形も検証対象です。
 RB-SORの更新順やスレッド数に固有のテストは、新しいPoissonの物理・数値検証へ置き換えています。
 
 - [時間ループ・出力統合の仕様と検証](TIME_LOOP_UNIFICATION.md)

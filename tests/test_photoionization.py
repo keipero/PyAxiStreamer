@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 import numpy as np
+from streamer_drift_diffusion.output import open_failure, open_fields, open_history
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
@@ -95,7 +96,7 @@ class PhotoionizationTests(unittest.TestCase):
         assert_allclose(state.o2 + state.o2p, oxygen, rtol=1e-15)
 
     def test_simulation_saves_photoionization_at_final_time(self):
-        """通常の適応刻みループで源を作り、同時刻のCSVに書く。"""
+        """通常の適応刻みループで源を作り、同時刻のフレームに書く。"""
         config = SimulationConfig(nr=8, nz=12, delta=1e-4, electrode_gap=5.5e-4,
                                   cathode_radius=2.5e-4, z0=4e-4, voltage=500.,
                                   adaptive_timestep=True, t_end=3e-12)
@@ -106,7 +107,7 @@ class PhotoionizationTests(unittest.TestCase):
             self.assertEqual(solver._factors, ())
             self.assertIsNone(solver._pool)
             output = Path(folder)
-            saved = np.loadtxt(output / "Sph1.csv").reshape(state.grid.shape)
-            assert_allclose(saved, solver.rate, rtol=5e-7)
+            saved = open_fields(output).photoionization.isel(time=-1)
+            assert_array_equal(saved, solver.rate)
             metadata = json.loads((output / "run_config.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["photoionization_model"], "bourdon-2007-helmholtz-3")
