@@ -126,6 +126,29 @@ class TimeLoopTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     main([option, '1'])
 
+    def test_cli_reads_toml_and_command_line_takes_precedence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/'run.toml'
+            path.write_text('nr = 12\nt_end = 2e-12\nadaptive_timestep = true\nvoltage_mode = "impulse"\n',
+                            encoding='utf-8')
+            with patch('streamer_drift_diffusion.__main__.run_simulation') as run:
+                main(['--config-file', str(path), '--nr', '20', '--no-adaptive-timestep', '--no-output'])
+            config = run.call_args.args[0]
+            self.assertEqual((config.nr, config.t_end, config.voltage_mode), (20, 2e-12, 'impulse'))
+            self.assertFalse(config.adaptive_timestep)
+            self.assertFalse(run.call_args.kwargs['write_output'])
+            path.write_text('unknown_key = 1\n', encoding='utf-8')
+            for argv in (['--config-file', str(path)], ['--voltage-mode', 'ac']):
+                with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        main(argv)
+
+    def test_cli_reports_invalid_configuration_as_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as raised:
+            main(['--nr', '0', '--no-output', '--quiet'])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn('nr must be', stderr.getvalue())
+
 
 if __name__ == '__main__':
     unittest.main()

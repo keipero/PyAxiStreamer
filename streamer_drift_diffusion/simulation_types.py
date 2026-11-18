@@ -1,7 +1,7 @@
 """計算設定と状態。配列添字は [半径 i, 軸方向 j]、単位は SI（電場は Td）。"""
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from .grid import CylindricalGrid
@@ -22,75 +22,75 @@ class SimulationConfig:
     Parameters
     ----------
     nr : int, optional
-        半径方向の分割数 Default: ``200``.
+        半径方向の分割数
     nz : int, optional
-        軸方向の分割数。既定の上端は1.5 mm、先端は1 mm。 Default: ``150``.
+        軸方向の分割数。既定の上端は1.5 mm、先端は1 mm。
     delta : float, optional
-        格子間隔 [m] Default: ``1e-05``.
+        格子間隔 [m]
     temperature : float, optional
-        温度 [K] Default: ``300.0``.
+        温度 [K]
     avogadro : float, optional
-        アボガドロ数 [mol^-1] Default: ``6.022141e+23``.
+        アボガドロ数 [mol^-1]
     gas_constant : float, optional
-        気体定数 [L·atm/(K·mol)] Default: ``0.08205736608096``.
+        気体定数 [L·atm/(K·mol)]
     elementary_charge : float, optional
-        電子の電荷 [C] Default: ``1.602176462e-19``.
+        電子の電荷 [C]
     vacuum_permittivity : float, optional
-        真空の誘電率 [F/m] Default: ``8.85e-12``.
+        真空の誘電率 [F/m]
     oxygen_fraction : float, optional
-        酸素分率 Default: ``0.2``.
+        酸素分率
     nitrogen_fraction : float, optional
-        窒素分率 Default: ``0.8``.
+        窒素分率
     cathode_radius : float, optional
-        カソード半径 [m] Default: ``0.0003``.
+        カソード半径 [m]
     voltage : float, optional
-        DCモードの電圧 [V] Default: ``4000.0``.
-    voltage_mode : str, optional
-        電圧モード（"dc" または "impulse"） Default: ``'dc'``.
+        DCモードの電圧 [V]
+    voltage_mode : {"dc", "impulse"}, optional
+        電圧モード。既定"dc"。
     impulse_peak_voltage : float, optional
-        インパルス電圧のピーク値 [V] Default: ``5000.0``.
+        インパルス電圧のピーク値 [V]
     impulse_time_scale : float, optional
-        インパルス電圧の時間倍率（無次元） Default: ``1.0``.
+        インパルス電圧の時間倍率（無次元）
     voltage_waveform_file : str, optional
         インパルス電圧波形ファイルのパス
     dt : float, optional
-        時間刻み [s] Default: ``1e-12``.
+        時間刻み [s]
     nmax : float, optional
-        最大電子密度 [m^-3] Default: ``1e+19``.
+        最大電子密度 [m^-3]
     z0 : float, optional
-        初期電子密度の中心位置 [m] Default: ``0.0009``.
+        初期電子密度の中心位置 [m]
     sr0 : float, optional
-        初期電子密度の半径方向の広がり [m] Default: ``0.0001``.
+        初期電子密度の半径方向の広がり [m]
     sz0 : float, optional
-        初期電子密度の軸方向の広がり [m] Default: ``0.0001``.
+        初期電子密度の軸方向の広がり [m]
     background_ionization : float, optional
-        基準幅dtに対応する背景の密度加算量 [m⁻³]。実際はactual_dt/dtを掛けて供給する。 Default: ``10000000000000.0``.
+        基準幅dtに対応する背景の密度加算量 [m⁻³]。実際はactual_dt/dtを掛けて供給する。
     poisson_tolerance : float, optional
-        max|Aφ-b|/max|b| の許容値。旧SOR更新量とは異なる。 Default: ``1e-10``.
+        max|Aφ-b|/max|b| の許容値。旧SOR更新量とは異なる。
     adaptive_timestep : bool, optional
-        共通ループで刻み幅の選択・再試行だけを切り替える。 Default: ``False``.
+        共通ループで刻み幅の選択・再試行だけを切り替える。
     t_end : float, optional
-        両モード共通の終了時刻 [s] Default: ``5.001e-09``.
+        両モード共通の終了時刻 [s]
     dt_max : float or None, optional
-        適応刻みの上限 [s]。Noneならdt。固定刻みの基本幅には使用しない。 Default: ``None``.
+        適応刻みの上限 [s]。Noneならdt。固定刻みの基本幅には使用しない。
     dt_min : float, optional
-        適応候補刻みの停止下限 [s]。イベントへの安全な端数短縮は下限未満も許す。 Default: ``1e-18``.
+        適応候補刻みの停止下限 [s]。イベントへの安全な端数短縮は下限未満も許す。
     dt_safety_factor : float, optional
-        各安定条件へ掛ける安全係数 Default: ``0.7``.
+        各安定条件へ掛ける安全係数
     dt_cfl_number : float, optional
-        セルの流出率に対するCFL数 Default: ``0.8``.
+        セルの流出率に対するCFL数
     dt_chemistry_fraction : float, optional
-        反応の生成・消費を制限する割合 Default: ``0.1``.
+        反応の生成・消費を制限する割合
     dt_growth_factor : float, optional
-        受理した刻みからの増加倍率の上限 Default: ``1.2``.
+        受理した刻みからの増加倍率の上限
     max_step_retries : int, optional
-        密度更新の縮小・再試行回数の上限 Default: ``12``.
+        密度更新の縮小・再試行回数の上限
     max_steps : int, optional
-        両モード共通の受理step数の停止上限 Default: ``1000000``.
+        両モード共通の受理step数の停止上限
     output_interval : float, optional
-        出力の実時間間隔 [s] Default: ``1e-10``.
+        出力の実時間間隔 [s]
     electrode_gap : float, optional
-        接地平面z=0から電極先端までの距離[m]。領域寸法とは独立。 Default: ``0.001``.
+        接地平面z=0から電極先端までの距離[m]。領域寸法とは独立。
     electron_diffusion : float, optional
         従来モードの一定電子拡散係数 [m²/s]。0は拡散なし。
         BOLOS輸送列のある表を使う場合は既定値0を指定する。
@@ -129,7 +129,7 @@ class SimulationConfig:
     nitrogen_fraction: float = 0.8 # 窒素分率
     cathode_radius: float = 300e-6 # カソード半径 [m]
     voltage: float = 4000.0 # DCモードの電圧 [V]
-    voltage_mode: str = "dc" # 電圧モード（"dc" または "impulse"）
+    voltage_mode: Literal["dc", "impulse"] = "dc" # 電圧モード（"dc" または "impulse"）
     impulse_peak_voltage: float = 5000.0 # インパルス電圧のピーク値 [V]
     impulse_time_scale: float = 1.0 # インパルス電圧の時間倍率（無次元）
     voltage_waveform_file: str = str(Path(__file__).resolve().parent / "data" / "impulse_waveform_V50_tr5_tw6.txt") # インパルス電圧波形ファイルのパス

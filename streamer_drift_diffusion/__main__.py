@@ -1,8 +1,110 @@
-"""python -m streamer_drift_diffusion の入口。"""
-import argparse
+"""python -m streamer_drift_diffusion の入口。
+
+CLIはtyroがSimulationConfigの全項目から生成する（例: ``--nr``、``--dt-max``、
+``--adaptive-timestep``／``--no-adaptive-timestep``）。``--config-file``でTOMLの設定を読み、
+コマンドラインの値はそれを上書きする。項目と既定値は``--help``で確認できる。
+"""
+from dataclasses import dataclass, fields, replace
+from pathlib import Path
+import sys
+import tomllib
+from typing import Annotated
+
+import tyro
 
 from .simulation_types import SimulationConfig, PROJECT_ROOT
 from .simulation import run_simulation
+
+
+@dataclass(frozen=True)
+class CommandLine:
+    """ストリーマ放電の軸対称シミュレーションを実行する。"""
+
+    config: Annotated[SimulationConfig, tyro.conf.OmitArgPrefixes]
+    output: Path = PROJECT_ROOT / "outputdata"  # 出力フォルダ（fields.zarrのない場所）
+    no_output: Annotated[bool, tyro.conf.FlagCreatePairsOff] = False  # 出力を保存しない
+    quiet: Annotated[bool, tyro.conf.FlagCreatePairsOff] = False  # 進捗を表示しない
+    config_file: Path | None = None  # 計算条件のTOMLファイル。コマンドラインの値が優先する
+
+
+def load_config_file(path, base=None):
+    """TOMLファイルの計算条件を、基準の設定へ上書きして返す。
+
+    Parameters
+    ----------
+    path : str or os.PathLike
+        SimulationConfigの項目名をキーとするTOML。表（[section]）は使わない。
+        Noneにしたい項目（dt_max、chemistry_table）はキーを省略する。
+    base : SimulationConfig, optional
+        上書き前の設定。Noneなら既定値。
+
+    Returns
+    -------
+    SimulationConfig
+        TOMLの値で置き換えた設定。
+
+    Raises
+    ------
+    ValueError
+        SimulationConfigにないキーを含む場合。
+    OSError, tomllib.TOMLDecodeError
+        読込み・構文の失敗。
+
+    Examples
+    --------
+    >>> import tempfile, os
+    >>> with tempfile.TemporaryDirectory() as directory:
+    ...     path = os.path.join(directory, 'run.toml')
+    ...     _ = open(path, 'w', encoding='utf-8').write('nr = 12\\nadaptive_timestep = true\\n')
+    ...     config = load_config_file(path)
+    >>> config.nr, config.adaptive_timestep
+    (12, True)
+    """
+    with open(path, "rb") as stream:
+        values = tomllib.load(stream)
+    unknown = values.keys() - {field.name for field in fields(SimulationConfig)}
+    if unknown:
+        raise ValueError(f"unknown SimulationConfig keys in {path}: {sorted(unknown)}")
+    return replace(SimulationConfig() if base is None else base, **values)
+
+
+def parse_args(argv=None):
+    """コマンドライン（と指定時はTOML）からCommandLineを作る。
+
+    Parameters
+    ----------
+    argv : list of str, optional
+        引数列。Noneならsys.argv[1:]。
+
+    Returns
+    -------
+    CommandLine
+        計算条件と出力の指定。
+
+    Raises
+    ------
+    SystemExit
+        --help、未知のオプション、不正な値、またはTOMLの読込み失敗。
+
+    Examples
+    --------
+    >>> args = parse_args(['--nr', '4', '--adaptive-timestep', '--no-output'])
+    >>> args.config.nr, args.config.adaptive_timestep, args.no_output
+    (4, True, True)
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # TOMLを先に読み、その値を既定値としてコマンドラインを解釈する。
+    preliminary = tyro.cli(CommandLine, args=argv, default=CommandLine(config=SimulationConfig()),
+                           prog="python -m streamer_drift_diffusion")
+    if preliminary.config_file is None:
+        return preliminary
+    try:
+        base = load_config_file(preliminary.config_file)
+    except (OSError, ValueError, TypeError, tomllib.TOMLDecodeError) as exc:
+        print(f"error: --config-file: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    return tyro.cli(CommandLine, args=argv, default=CommandLine(config=base),
+                    prog="python -m streamer_drift_diffusion")
 
 
 def main(argv=None):
@@ -21,71 +123,20 @@ def main(argv=None):
     Raises
     ------
     SystemExit
-        --help、未知のオプション、または実行時エラーをargparseが報告する場合。
-
-    Notes
-    -----
-    --t-end、--output-interval、--max-stepsは両モード共通。
-    --adaptive-timestepを指定すると安全刻みの選択と再試行を有効にする。
+        --help、未知のオプション、または設定・実行時エラー（終了コード2）。
 
     Examples
     --------
     >>> main(['--nr', '2', '--nz', '3', '--t-end', '0', '--no-output', '--quiet'])
     0
     """
-    defaults = SimulationConfig()
-    parser = argparse.ArgumentParser(description="Axisymmetric streamer drift/reaction simulation")
-    parser.add_argument("--output", default=str(PROJECT_ROOT / "outputdata"))
-    parser.add_argument("--voltage-mode", choices=("dc", "impulse"), default=defaults.voltage_mode)
-    parser.add_argument("--voltage", type=float, default=defaults.voltage)
-    parser.add_argument("--impulse-peak", type=float, default=defaults.impulse_peak_voltage)
-    parser.add_argument("--impulse-time-scale", type=float, default=defaults.impulse_time_scale)
-    parser.add_argument("--waveform", default=defaults.voltage_waveform_file)
-    parser.add_argument("--nr", type=int, default=defaults.nr)
-    parser.add_argument("--nz", type=int, default=defaults.nz)
-    parser.add_argument("--poisson-tolerance", type=float, default=defaults.poisson_tolerance, help="Relative Poisson RHS residual tolerance")
-    parser.add_argument("--delta", type=float, default=defaults.delta, help="Uniform cell spacing [m]")
-    parser.add_argument("--electrode-gap", type=float, default=defaults.electrode_gap, help="Electrode tip height above ground [m]")
-    parser.add_argument("--electron-diffusion", type=float, default=defaults.electron_diffusion,
-                        help="Constant coefficient [m^2/s] for tables without BOLOS transport or empirical mode")
-    parser.add_argument("--chemistry-table", help="JSON electron transport and reaction coefficients")
-    parser.add_argument("--photoionization-efficiency", type=float, default=defaults.photoionization_efficiency,
-                        help="Photon production factor before collisional quenching")
-    parser.add_argument("--photoionization-workers", type=int, choices=(1, 2, 3),
-                        default=defaults.photoionization_workers, help="Helmholtz solve threads")
-    parser.add_argument("--no-output", action="store_true")
-    parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--adaptive-timestep", action="store_true", default=defaults.adaptive_timestep, help="Use adaptive explicit timesteps")
-    parser.add_argument("--t-end", type=float, default=defaults.t_end, help="End time [s], common to fixed and adaptive modes")
-    parser.add_argument("--dt", type=float, default=defaults.dt, help="Fixed dt / reference dt for background supply [s]")
-    parser.add_argument("--dt-max", type=float, default=defaults.dt_max, help="Maximum adaptive dt [s], defaults to --dt")
-    parser.add_argument("--dt-min", type=float, default=defaults.dt_min)
-    parser.add_argument("--dt-safety-factor", type=float, default=defaults.dt_safety_factor)
-    parser.add_argument("--dt-cfl-number", type=float, default=defaults.dt_cfl_number)
-    parser.add_argument("--dt-chemistry-fraction", type=float, default=defaults.dt_chemistry_fraction)
-    parser.add_argument("--dt-growth-factor", type=float, default=defaults.dt_growth_factor)
-    parser.add_argument("--max-step-retries", type=int, default=defaults.max_step_retries)
-    parser.add_argument("--max-steps", type=int, default=defaults.max_steps)
-    parser.add_argument("--output-interval", type=float, default=defaults.output_interval, help="Output interval [s]")
-    args = parser.parse_args(argv)
-    config = SimulationConfig(
-        voltage_mode=args.voltage_mode, voltage=args.voltage,
-        impulse_peak_voltage=args.impulse_peak, impulse_time_scale=args.impulse_time_scale,
-        voltage_waveform_file=args.waveform, nr=args.nr, nz=args.nz,
-        electrode_gap=args.electrode_gap, delta=args.delta,
-        electron_diffusion=args.electron_diffusion, chemistry_table=args.chemistry_table,
-        photoionization_efficiency=args.photoionization_efficiency,
-        photoionization_workers=args.photoionization_workers,
-        poisson_tolerance=args.poisson_tolerance,
-        adaptive_timestep=args.adaptive_timestep, t_end=args.t_end, dt=args.dt,
-        dt_max=args.dt_max, dt_min=args.dt_min, dt_safety_factor=args.dt_safety_factor,
-        dt_cfl_number=args.dt_cfl_number, dt_chemistry_fraction=args.dt_chemistry_fraction,
-        dt_growth_factor=args.dt_growth_factor, max_step_retries=args.max_step_retries,
-        max_steps=args.max_steps, output_interval=args.output_interval)
+    args = parse_args(argv)
     try:
-        run_simulation(config, output_dir=args.output, write_output=not args.no_output, verbose=not args.quiet)
+        run_simulation(args.config, output_dir=args.output, write_output=not args.no_output,
+                       verbose=not args.quiet)
     except (ValueError, OSError, RuntimeError) as exc:
-        parser.error(str(exc))
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
     return 0
 
 

@@ -4,3 +4,4 @@ ruamel.yaml>=0.18
 numba>=0.68.1
 xarray>=2025.1
 zarr>=3.0
+tyro>=1.0

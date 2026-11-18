@@ -26,10 +26,33 @@ python -m streamer_drift_diffusion
 python -m streamer_drift_diffusion --nr=12 --nz=16 --delta=1e-4 --electrode-gap=6e-4 --t-end=3e-12 --no-output
 
 # インパルス波形
-python -m streamer_drift_diffusion --voltage-mode=impulse --impulse-peak=5000 --output=outputdata_impulse
+python -m streamer_drift_diffusion --voltage-mode=impulse --impulse-peak-voltage=5000 --output=outputdata_impulse
 
 # 適応刻み。固定／適応とも出力先はfields.zarrのないフォルダを指定する
 python -m streamer_drift_diffusion --adaptive-timestep --t-end=5.001e-9 --output-interval=1e-10 --output=outputdata_adaptive
+
+# TOMLの計算条件を読み、一部だけコマンドラインで上書きする
+python -m streamer_drift_diffusion --config-file=run.toml --nr=300
+```
+
+CLIは`SimulationConfig`の全項目からtyroが生成します。項目名の`_`を`-`にしたオプションになり
+（例: `dt_max`→`--dt-max`）、真偽値は`--adaptive-timestep`／`--no-adaptive-timestep`の対で指定します。
+説明と既定値は`--help`で確認できます。旧オプション`--impulse-peak`・`--waveform`は
+`--impulse-peak-voltage`・`--voltage-waveform-file`に変わりました。
+
+`--config-file`には、`SimulationConfig`の項目名をキーとするTOMLを指定します。
+未知のキーはエラーになり、Noneにしたい項目（`dt_max`・`chemistry_table`）はキーを省略します。
+同じ項目をコマンドラインでも指定した場合は、コマンドラインの値が優先されます。
+
+```toml
+# run.toml
+nr = 200
+nz = 150
+voltage_mode = "impulse"
+impulse_peak_voltage = 5000.0
+adaptive_timestep = true
+t_end = 5.001e-9
+output_interval = 1e-10
 ```
 
 Pythonからは次のように実行できます。
@@ -188,7 +211,7 @@ dt_minへの無条件な切上げは行いません。イベントまでの端�
 | `t_end` | 共通の終了時刻[s]、5.001e-9。0なら初期状態のみ |
 | `output_interval` | 共通の保存間隔[s]、1e-10 |
 
-CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます。
+CLIの全項目と既定値は`python -m streamer_drift_diffusion --help`で確認できます。
 
 ## 保存形式と可視化
 
@@ -235,6 +258,7 @@ CSV出力（`ne*.csv`・`times.csv`など）は廃止しました。旧形式の
 | `simulation.py` | 固定／適応の共通時間ループと同時刻の電場・係数準備 |
 | `voltage_waveforms.py` | DC・インパルス入力、補間・単位換算 |
 | `output.py` | xarray・Zarrの場・刻み履歴・停止診断とその読込み |
+| `__main__.py` | tyroによるCLIとTOML設定の読込み |
 
 ## 検証
 
