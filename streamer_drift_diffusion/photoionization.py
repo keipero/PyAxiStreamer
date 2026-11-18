@@ -2,7 +2,6 @@
 from concurrent.futures import ThreadPoolExecutor, wait
 
 import numpy as np
-from scipy.sparse import coo_matrix, diags
 from scipy.sparse.linalg import splu
 
 
@@ -78,25 +77,19 @@ class PhotoionizationSolver:
         interior = low_gas & high_gas
         boundary = low_gas ^ high_gas
         open_faces = boundary & (grid.boundary_kind == 2)
-        conductance = np.where(interior | (boundary & ~open_faces),
-                               grid.area / grid.distances(self._gas), 0.)
-        diagonal = grid.sum_faces(conductance * low_gas, conductance * high_gas)
+        conductance = grid.area / grid.distances(self._gas)
+        # 電極・接地面は半セル距離のゼロDirichlet、開放面は下のRobin条件。
+        wall = np.where(boundary & ~open_faces, conductance, 0.)
+        wall = grid.sum_faces(wall * low_gas, wall * high_gas).ravel(order="F")[self._mask]
         open_area = grid.area * open_faces
         surface = grid.sum_faces(open_area * low_gas, open_area * high_gas)
         surface = surface.ravel(order="F")[self._mask]
-        cell = np.cumsum(self._mask) - 1
-        left, right = cell[grid.low[interior]], cell[grid.high[interior]]
-        indices = np.arange(self._volume.size)
-        edges = -conductance[interior]
-        negative_laplacian = coo_matrix(
-            (np.r_[edges, edges, diagonal.ravel(order="F")[self._mask]],
-             (np.r_[left, right, indices], np.r_[right, left, indices])),
-            shape=(indices.size, indices.size),
-        ).tocsc()
+        coupling = np.where(interior, conductance, 0.)
         half_cell = grid.spacing / 2
-        return tuple(splu(negative_laplacian + diags(
-            kappa**2 * self._volume + surface * kappa / (1. + kappa * half_cell),
-            format="csc",
+        return tuple(splu(grid.conductance_matrix(
+            coupling,
+            wall + kappa**2 * self._volume + surface * kappa / (1. + kappa * half_cell),
+            cells=self._gas,
         )) for kappa in self._absorption)
 
     def solve(self, impact, *, return_components=False):

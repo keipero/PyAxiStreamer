@@ -1,6 +1,5 @@
 """明示的ドリフト拡散の面流束、非負性、収支と解析解を検証する。"""
 from dataclasses import replace
-import csv
 import json
 import math
 from pathlib import Path
@@ -18,6 +17,7 @@ from streamer_drift_diffusion.timestepping import (
     TimestepError, timestep_limits, advance_density,
 )
 from streamer_drift_diffusion.__main__ import main
+from streamer_drift_diffusion.output import open_failure, open_fields, open_history
 
 
 def gaussian_average(grid, sigma, center):
@@ -214,13 +214,11 @@ class DiffusionTests(unittest.TestCase):
             self.assertEqual(metadata['transport_backend'], 'numba')
             self.assertEqual(metadata['transport_time_scheme'], 'explicit Euler')
             self.assertEqual(metadata['transport_advection_scheme'], 'van Leer')
-            self.assertIn('fipy_version', metadata)
-            self.assertIn('fipy_solver_suite', metadata)
-            with (Path(directory)/'timestep_history.csv').open() as history:
-                rows = list(csv.DictReader(history))
-            self.assertTrue(rows)
-            self.assertTrue(all(float(row['dt_diffusion_s']) > 0. for row in rows))
-            self.assertTrue(all(float(row['dt_s']) <= float(row['dt_diffusion_s']) for row in rows))
+            self.assertNotIn('fipy_version', metadata)
+            history = open_history(directory).load()
+            self.assertGreater(history.sizes['step'], 0)
+            self.assertTrue(np.all(history.dt_diffusion > 0.))
+            self.assertTrue(np.all(history.dt <= history.dt_diffusion))
 
     def test_forward_euler_time_convergence_against_discrete_eigenmode(self):
         # 2円環の半セル吸収を含む固有モードで、空間誤差を除く。

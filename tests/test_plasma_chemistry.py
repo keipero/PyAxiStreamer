@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 import numpy as np
+from streamer_drift_diffusion.output import open_failure, open_fields, open_history
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
@@ -67,7 +68,7 @@ class ChemistryTests(unittest.TestCase):
         state = initialize_simulation(self.config)
         gas = state.gas_mask
         state.abs_e[gas] = 100.
-        state.ne_var.setValue(np.where(gas, 1e18, 0.).ravel(order="F"))
+        state.ne[:] = np.where(gas, 1e18, 0.)
         state.n2[gas], state.o2[gas] = 1e20, 2e20
         state.n2p[gas], state.o2p[gas] = 2e18, 0.
         calculate_reaction_coefficients(state)
@@ -94,11 +95,10 @@ class ChemistryTests(unittest.TestCase):
         state = run_simulation(self.config, output_dir=self.output, verbose=False)
         self.assertGreater(float(state.o.max()), 0.)
         assert_array_equal(state.o, state.om)
-        assert_allclose(np.loadtxt(self.output/"O1.csv").reshape(state.o.shape), state.o, rtol=5e-7)
-        with np.load(self.output/"species1.npz", allow_pickle=False) as archive:
-            self.assertEqual(set(archive.files), set(SPECIES_FIELDS))
-            for species, field in SPECIES_FIELDS.items():
-                assert_array_equal(archive[species], getattr(state, field))
+        frame = open_fields(self.output).isel(time=-1).load()
+        for species, field in SPECIES_FIELDS.items():
+            self.assertEqual(frame[field].attrs["species"], species)
+            assert_array_equal(frame[field], getattr(state, field))
         report = json.loads((self.output/"run_config.json").read_text(encoding="utf-8"))
         self.assertEqual(report["chemistry_backend"], "py3bolos-cantera-table")
         self.assertEqual(report["electron_mobility_source"], "py3bolos-table")
@@ -121,7 +121,7 @@ class ChemistryTests(unittest.TestCase):
         phase.TPX = 300., 10., {"N2": .3, "O2": .6, "Electron": .01, "N2+": .02}
         initial = phase.concentrations * ct.avogadro
         mask = state.gas_mask
-        state.ne_var.setValue(np.where(mask, initial[phase.species_index("Electron")], 0.).ravel(order="F"))
+        state.ne[:] = np.where(mask, initial[phase.species_index("Electron")], 0.)
         for name, species in zip(DENSITY_NAMES[1:], mechanism["species"][1:]):
             getattr(state, name)[mask] = initial[phase.species_index(species)]
         state.abs_e[mask] = 100.

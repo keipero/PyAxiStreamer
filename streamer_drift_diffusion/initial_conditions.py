@@ -4,7 +4,6 @@ import math
 from numbers import Integral, Real
 
 import numpy as np
-from fipy import CellVariable
 
 from .simulation_types import SimulationConfig, SimulationState, molecular_density
 from .grid import initialize_grid
@@ -81,7 +80,7 @@ def validate_config(config):
 
 
 def initialize_simulation(config=None):
-    """共有格子・電極マスク・FiPy Poisson方程式・初期粒子分布を生成する。
+    """共有格子・電極マスク・Poisson行列・初期粒子分布を生成する。
 
     Parameters
     ----------
@@ -91,8 +90,7 @@ def initialize_simulation(config=None):
     Returns
     -------
     SimulationState
-        シミュレーションごとに独立した状態。ne_var・phi_varをFiPyの正本として確保し、
-        ne・phiはその2次元ビューとする。座標等は1次元、
+        シミュレーションごとに独立した状態。座標等は1次元、
         密度・電位・中心電場等は(nr,nz)。半径面の電場・速度・移動度は
         (nr+1,nz)、軸方向面は(nr,nz+1)。electron_lossesは長さ3。
 
@@ -103,9 +101,7 @@ def initialize_simulation(config=None):
 
     Notes
     -----
-    共有メッシュ上のFiPy Poisson方程式と境界電位を初期化する。
-    電子密度のCellVariableはhasOld=True、電位はPoissonSolverと同じCellVariableを参照する。
-    この2変数に対応する独立したNumPy状態配列は確保しない。
+    共有格子上のPoisson行列と境界電位を初期化する。phiはPoissonSolver.potentialと同じ配列。
     初期phiと電場は0。時間発展時に総電位を直接求解する。
     初期の中性粒子・電荷中性Gaussian・背景供給は気体セルに限定する。
     電極内の全密度と累積流出電子数は0。gas_maskはbool、他はfloat64。
@@ -128,8 +124,7 @@ def initialize_simulation(config=None):
     for name in ("ez_face", "vey", "mobility_z"):
         arrays[name] = np.zeros((config.nr, config.nz + 1), dtype=np.float64)
     arrays['poisson'] = PoissonSolver(arrays['grid'], arrays['gas_mask'], config)
-    arrays['phi_var'] = arrays['poisson'].potential
-    arrays['ne_var'] = CellVariable(mesh=arrays['grid'].mesh, value=0., hasOld=True)
+    arrays['phi'] = arrays['poisson'].potential
     arrays['radial_boundary'] = arrays['poisson'].radial_boundary
     arrays['upper_boundary'] = arrays['poisson'].upper_boundary
     arrays['chemistry'] = None
@@ -157,6 +152,6 @@ def initialize_simulation(config=None):
     state.o2[:] = config.oxygen_fraction * mol * state.gas_mask
     state.n2p[:] = config.nitrogen_fraction * config.nmax * gaussian * state.gas_mask
     state.o2p[:] = config.oxygen_fraction * config.nmax * gaussian * state.gas_mask
-    state.ne_var.setValue((state.n2p + state.o2p).ravel(order='F'))
+    state.ne[:] = state.n2p + state.o2p
     calculate_transport_coefficients(state, config)
     return state

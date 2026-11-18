@@ -1,10 +1,9 @@
 """計算設定と状態。配列添字は [半径 i, 軸方向 j]、単位は SI（電場は Td）。"""
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-from fipy import CellVariable
 from .grid import CylindricalGrid
 
 if TYPE_CHECKING:
@@ -23,75 +22,75 @@ class SimulationConfig:
     Parameters
     ----------
     nr : int, optional
-        半径方向の分割数 Default: ``200``.
+        半径方向の分割数
     nz : int, optional
-        軸方向の分割数。既定の上端は1.5 mm、先端は1 mm。 Default: ``150``.
+        軸方向の分割数。既定の上端は1.5 mm、先端は1 mm。
     delta : float, optional
-        格子間隔 [m] Default: ``1e-05``.
+        格子間隔 [m]
     temperature : float, optional
-        温度 [K] Default: ``300.0``.
+        温度 [K]
     avogadro : float, optional
-        アボガドロ数 [mol^-1] Default: ``6.022141e+23``.
+        アボガドロ数 [mol^-1]
     gas_constant : float, optional
-        気体定数 [L·atm/(K·mol)] Default: ``0.08205736608096``.
+        気体定数 [L·atm/(K·mol)]
     elementary_charge : float, optional
-        電子の電荷 [C] Default: ``1.602176462e-19``.
+        電子の電荷 [C]
     vacuum_permittivity : float, optional
-        真空の誘電率 [F/m] Default: ``8.85e-12``.
+        真空の誘電率 [F/m]
     oxygen_fraction : float, optional
-        酸素分率 Default: ``0.2``.
+        酸素分率
     nitrogen_fraction : float, optional
-        窒素分率 Default: ``0.8``.
+        窒素分率
     cathode_radius : float, optional
-        カソード半径 [m] Default: ``0.0003``.
+        カソード半径 [m]
     voltage : float, optional
-        DCモードの電圧 [V] Default: ``4000.0``.
-    voltage_mode : str, optional
-        電圧モード（"dc" または "impulse"） Default: ``'dc'``.
+        DCモードの電圧 [V]
+    voltage_mode : {"dc", "impulse"}, optional
+        電圧モード。既定"dc"。
     impulse_peak_voltage : float, optional
-        インパルス電圧のピーク値 [V] Default: ``5000.0``.
+        インパルス電圧のピーク値 [V]
     impulse_time_scale : float, optional
-        インパルス電圧の時間倍率（無次元） Default: ``1.0``.
+        インパルス電圧の時間倍率（無次元）
     voltage_waveform_file : str, optional
         インパルス電圧波形ファイルのパス
     dt : float, optional
-        時間刻み [s] Default: ``1e-12``.
+        時間刻み [s]
     nmax : float, optional
-        最大電子密度 [m^-3] Default: ``1e+19``.
+        最大電子密度 [m^-3]
     z0 : float, optional
-        初期電子密度の中心位置 [m] Default: ``0.0009``.
+        初期電子密度の中心位置 [m]
     sr0 : float, optional
-        初期電子密度の半径方向の広がり [m] Default: ``0.0001``.
+        初期電子密度の半径方向の広がり [m]
     sz0 : float, optional
-        初期電子密度の軸方向の広がり [m] Default: ``0.0001``.
+        初期電子密度の軸方向の広がり [m]
     background_ionization : float, optional
-        基準幅dtに対応する背景の密度加算量 [m⁻³]。実際はactual_dt/dtを掛けて供給する。 Default: ``10000000000000.0``.
+        基準幅dtに対応する背景の密度加算量 [m⁻³]。実際はactual_dt/dtを掛けて供給する。
     poisson_tolerance : float, optional
-        max|Aφ-b|/max|b| の許容値。旧SOR更新量とは異なる。 Default: ``1e-10``.
+        max|Aφ-b|/max|b| の許容値。旧SOR更新量とは異なる。
     adaptive_timestep : bool, optional
-        共通ループで刻み幅の選択・再試行だけを切り替える。 Default: ``False``.
+        共通ループで刻み幅の選択・再試行だけを切り替える。
     t_end : float, optional
-        両モード共通の終了時刻 [s] Default: ``5.001e-09``.
+        両モード共通の終了時刻 [s]
     dt_max : float or None, optional
-        適応刻みの上限 [s]。Noneならdt。固定刻みの基本幅には使用しない。 Default: ``None``.
+        適応刻みの上限 [s]。Noneならdt。固定刻みの基本幅には使用しない。
     dt_min : float, optional
-        適応候補刻みの停止下限 [s]。イベントへの安全な端数短縮は下限未満も許す。 Default: ``1e-18``.
+        適応候補刻みの停止下限 [s]。イベントへの安全な端数短縮は下限未満も許す。
     dt_safety_factor : float, optional
-        各安定条件へ掛ける安全係数 Default: ``0.7``.
+        各安定条件へ掛ける安全係数
     dt_cfl_number : float, optional
-        セルの流出率に対するCFL数 Default: ``0.8``.
+        セルの流出率に対するCFL数
     dt_chemistry_fraction : float, optional
-        反応の生成・消費を制限する割合 Default: ``0.1``.
+        反応の生成・消費を制限する割合
     dt_growth_factor : float, optional
-        受理した刻みからの増加倍率の上限 Default: ``1.2``.
+        受理した刻みからの増加倍率の上限
     max_step_retries : int, optional
-        密度更新の縮小・再試行回数の上限 Default: ``12``.
+        密度更新の縮小・再試行回数の上限
     max_steps : int, optional
-        両モード共通の受理step数の停止上限 Default: ``1000000``.
+        両モード共通の受理step数の停止上限
     output_interval : float, optional
-        出力の実時間間隔 [s] Default: ``1e-10``.
+        出力の実時間間隔 [s]
     electrode_gap : float, optional
-        接地平面z=0から電極先端までの距離[m]。領域寸法とは独立。 Default: ``0.001``.
+        接地平面z=0から電極先端までの距離[m]。領域寸法とは独立。
     electron_diffusion : float, optional
         従来モードの一定電子拡散係数 [m²/s]。0は拡散なし。
         BOLOS輸送列のある表を使う場合は既定値0を指定する。
@@ -130,7 +129,7 @@ class SimulationConfig:
     nitrogen_fraction: float = 0.8 # 窒素分率
     cathode_radius: float = 300e-6 # カソード半径 [m]
     voltage: float = 4000.0 # DCモードの電圧 [V]
-    voltage_mode: str = "dc" # 電圧モード（"dc" または "impulse"）
+    voltage_mode: Literal["dc", "impulse"] = "dc" # 電圧モード（"dc" または "impulse"）
     impulse_peak_voltage: float = 5000.0 # インパルス電圧のピーク値 [V]
     impulse_time_scale: float = 1.0 # インパルス電圧の時間倍率（無次元）
     voltage_waveform_file: str = str(Path(__file__).resolve().parent / "data" / "impulse_waveform_V50_tr5_tw6.txt") # インパルス電圧波形ファイルのパス
@@ -157,6 +156,9 @@ class SimulationConfig:
     chemistry_table: str | Path | None = None
     photoionization_efficiency: float = 0.075
     photoionization_workers: int = 3
+    positive_ion_mobility: float = 0.0  # 1.5D軸方向イオン移動度 [m²/(V s)]。
+    negative_ion_mobility: float = 0.0
+    flux_neumann_boundaries: bool = False  # 添付図の外周電位・電子流束境界条件
 
 
 def molecular_density(config):
@@ -211,12 +213,12 @@ def gap_length(config):
 # frozen=Trueにより，frozen dataclass となり，フィールドの再代入が禁止される
 @dataclass(frozen=True)
 class SimulationState:
-    """共有格子・FiPyソルバーと、時間発展する物理量配列を保持する。
+    """共有格子・ソルバーと、時間発展する物理量配列を保持する。
 
     Parameters
     ----------
     poisson : PoissonSolver
-        総電位を直接求解するFiPy PoissonSolver。
+        総電位を直接求解するPoissonSolver。
     grid : CylindricalGrid
         全処理が共有する円筒メッシュ・面情報。
     r : ndarray of float64, shape (nr,)
@@ -237,8 +239,8 @@ class SimulationState:
         半径方向の下側セル面の面積係数 [m^2]（2πを省略）
     sz : ndarray of float64, shape (nr, nz)
         軸方向の下側セル面の面積係数 [m^2]（2πを省略）
-    phi_var : fipy.CellVariable
-        総電位の正本 [V]。poisson.potentialと共有するFiPyセル番号順の変数。
+    phi : ndarray of float64, shape (nr, nz)
+        総電位 [V]。poisson.potentialと同じ配列。
     ex : ndarray of float64, shape (nr, nz)
         セル中心の半径方向換算電場E_r/N [Td]（名前のxはr方向）
     ey : ndarray of float64, shape (nr, nz)
@@ -257,8 +259,8 @@ class SimulationState:
         酸素原子負イオンO⁻の数密度 [m^-3]
     o2m : ndarray of float64, shape (nr, nz)
         酸素分子負イオンO₂⁻の数密度 [m^-3]
-    ne_var : fipy.CellVariable
-        電子密度の正本 [m⁻³]。輸送と共有するFiPyセル番号順の変数。hasOld=True。
+    ne : ndarray of float64, shape (nr, nz)
+        電子密度 [m⁻³]。
     rho : ndarray of float64, shape (nr, nz)
         Poisson電荷源 [V/m^2]。正味電荷密度/ε₀（半径重みなし）
     vex : ndarray of float64, shape (nr+1, nz)
@@ -297,12 +299,6 @@ class SimulationState:
     upper_boundary : ndarray of float64, shape (nr,)
         上端面の単位印加電圧に対する電位 [V/V]。長さnr
 
-    Attributes
-    ----------
-    ne, phi : ndarray of float64, shape (nr, nz)
-        正本の値をFortran順に変形した2次元ビュー。独立した値は保持しない。
-        neは電子密度 [m⁻³]、phiは総電位 [V]。独立した退避値にはcopy()を使う。
-
     photoionization : PhotoionizationSolver
         共有格子で3項Helmholtz近似の光電離源を求めるソルバ。
 
@@ -314,9 +310,8 @@ class SimulationState:
     密度の単位はm⁻³、電位はV、換算電場はTd、速度はm/s。
     面積・体積は2πを省略し、electron_lossesだけは2πを含む実電子数。
     幾何配列はgridへの参照・ビューなので、格子を初期化後に書き換えない。
-    状態退避は必要な数値配列をコピーする。FiPyの方程式を含む全体のdeepcopy/pickleは使用しない。
-    ne・phiへのNumPyスライス代入は正本の値を変える。FiPyの派生式のキャッシュも
-    更新する場合はne_var・phi_varのsetValue()を使う。組込みの初期化・反応・復元はこのAPIを使う。
+    状態退避は必要な数値配列をコピーする。LU分解を含む全体のdeepcopy/pickleは使用しない。
+    ne・phiを含む全配列はスライス代入（state.ne[:] = ...）で更新する。
 
     Examples
     --------
@@ -340,7 +335,7 @@ class SimulationState:
     volume: np.ndarray  # セル体積係数 [m^3]（共通係数2πを省略）
     sr: np.ndarray  # 半径方向の下側セル面の面積係数 [m^2]（2πを省略）
     sz: np.ndarray  # 軸方向の下側セル面の面積係数 [m^2]（2πを省略）
-    phi_var: CellVariable  # 総電位の正本。PoissonSolverと共有する。
+    phi: np.ndarray  # 総電位 [V]。PoissonSolver.potentialと同じ配列
     ex: np.ndarray  # セル中心の半径方向換算電場E_r/N [Td]（名前のxはr方向）
     ey: np.ndarray  # セル中心の軸方向換算電場E_z/N [Td]（名前のyはz方向）
     abs_e: np.ndarray  # セル中心の換算電場の大きさ|E|/N [Td]。反応に使用
@@ -350,7 +345,7 @@ class SimulationState:
     o2p: np.ndarray  # 酸素分子正イオンO₂⁺の数密度 [m^-3]
     om: np.ndarray  # 酸素原子負イオンO⁻の数密度 [m^-3]
     o2m: np.ndarray  # 酸素分子負イオンO₂⁻の数密度 [m^-3]
-    ne_var: CellVariable  # 電子密度の正本。輸送と共有し、旧値も保持する。
+    ne: np.ndarray  # 電子密度 [m^-3]
     rho: np.ndarray  # Poisson電荷源 [V/m^2]。正味電荷密度/ε₀（半径重みなし）
     vex: np.ndarray  # 全半径面の電子ドリフト速度 [m/s]。形状(nr+1,nz)
     vey: np.ndarray  # 全軸方向面の電子ドリフト速度 [m/s]。形状(nr,nz+1)
@@ -372,53 +367,3 @@ class SimulationState:
     n2o: np.ndarray
     reaction_rates: np.ndarray | None
     photoionization: "PhotoionizationSolver"
-
-    @property
-    def ne(self):
-        """電子密度の正本を、コピーなしのセル配列として参照する。
-
-        Returns
-        -------
-        ndarray, shape (nr, nz)
-            ne_var.valueとメモリを共有する電子密度 [m⁻³]。独立した退避にはcopy()を使う。
-
-        Notes
-        -----
-        FiPyセル番号との対応はFortran順。NumPyでの要素変更は正本に反映する。
-        FiPyの派生式にも変更を通知する代入にはne_var.setValue()を用いる。
-
-        Examples
-        --------
-        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
-        >>> import numpy as np
-        >>> state = initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.))
-        >>> np.shares_memory(state.ne, state.ne_var.value)
-        True
-        """
-        return self.ne_var.value.reshape(self.grid.shape, order='F')
-
-    @property
-    def phi(self):
-        """総電位の正本を、コピーなしのセル配列として参照する。
-
-        Returns
-        -------
-        ndarray, shape (nr, nz)
-            phi_var.valueとメモリを共有する総電位 [V]。求解後も最新値を参照する。
-
-        Notes
-        -----
-        Fortran順の2次元ビュー。独立した退避にはcopy()、FiPyの派生式への変更通知を
-        伴う代入にはphi_var.setValue()を使う。phi_varはpoisson.potentialと同一の変数。
-
-        Examples
-        --------
-        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
-        >>> import numpy as np
-        >>> state = initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.))
-        >>> state.phi_var is state.poisson.potential
-        True
-        >>> np.shares_memory(state.phi, state.phi_var.value)
-        True
-        """
-        return self.phi_var.value.reshape(self.grid.shape, order='F')

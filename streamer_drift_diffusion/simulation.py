@@ -121,7 +121,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
     config : SimulationConfig, optional
         計算条件。Noneなら既定設定。t_end [s]とoutput_interval [s]は両モード共通。
     output_dir : str or os.PathLike, optional
-        出力先。出力有効時は既存CSVのないフォルダを指定する。
+        出力先。出力有効時はfields.zarrのないフォルダを指定する。
     write_output : bool, optional
         Trueなら初期・指定間隔・最終状態と全受理更新の履歴を保存する。
     verbose : bool, optional
@@ -137,7 +137,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
     ValueError
         格子、時間、係数または波形の設定が不正。
     FileExistsError
-        出力先に既存CSVがあり、計算条件の混在を防ぐ場合。
+        出力先に既存のfields.zarrがあり、計算条件の混在を防ぐ場合。
     TimestepError
         安定刻みを受理できない、固定幅が不安定、更新数上限、または電場準備が失敗。
     RuntimeError

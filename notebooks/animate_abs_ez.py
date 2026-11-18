@@ -1,9 +1,8 @@
-"""Create a GIF of the absolute axial reduced electric field from Ey*.csv."""
+"""Create a GIF of the absolute axial reduced electric field from fields.zarr."""
 
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
 import sys
 
@@ -18,19 +17,18 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent))
-from streamer_drift_diffusion.output import load_output_times
-STEP_PATTERN = re.compile(r"^Ey(\d+)\.csv$")
+from streamer_drift_diffusion.output import open_fields
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Animate the absolute axial reduced field |Ez|/N from Ey*.csv."
+        description="Animate the absolute axial reduced field |Ez|/N from fields.zarr."
     )
     parser.add_argument(
         "--input",
         type=Path,
         default=SCRIPT_DIR / "outputdata",
-        help="Directory containing rh.csv, zh.csv, and Ey*.csv",
+        help="Simulation output directory containing fields.zarr",
     )
     parser.add_argument(
         "--output",
@@ -46,49 +44,17 @@ def parse_args() -> argparse.Namespace:
         default=500.0,
         help="Upper color limit in Td; use 0 for automatic global maximum",
     )
-    parser.add_argument(
-        "--dt",
-        type=float,
-        default=1.0e-12,
-        help="Simulation time step in seconds",
-    )
     return parser.parse_args()
 
 
-def discover_steps(input_dir: Path) -> list[int]:
-    steps = []
-    for path in input_dir.glob("Ey*.csv"):
-        match = STEP_PATTERN.match(path.name)
-        if match:
-            steps.append(int(match.group(1)))
-    return sorted(steps)
-
-
-def load_frames(input_dir: Path) -> tuple[np.ndarray, np.ndarray, list[int], list[np.ndarray]]:
-    r_m = np.atleast_1d(np.loadtxt(input_dir / "rh.csv"))
-    z_m = np.atleast_1d(np.loadtxt(input_dir / "zh.csv"))
-    nr, nz = len(r_m), len(z_m)
-    expected = nr * nz
-
-    valid_steps: list[int] = []
-    frames: list[np.ndarray] = []
-    for step in discover_steps(input_dir):
-        path = input_dir / f"Ey{step}.csv"
-        values = np.atleast_1d(np.loadtxt(path))
-        if values.size != expected:
-            print(
-                f"Skipping {path.name}: {values.size} values found; "
-                f"expected {expected}. The simulation may still be writing it."
-            )
-            continue
-        # CSV order is C-compatible for(i) for(j): reshape to (r, z), then transpose.
-        signed_ez = values.reshape((nr, nz), order="C")
-        frames.append(np.abs(signed_ez).T)
-        valid_steps.append(step)
-
+def load_frames(input_dir: Path) -> tuple[np.ndarray, np.ndarray, list[int], np.ndarray, list[np.ndarray]]:
+    fields = open_fields(input_dir)
+    # (time, r, z) -> 描画用に各フレームを(z, r)へ転置する。
+    frames = list(np.abs(fields.ey.transpose("time", "z", "r").values))
     if not frames:
-        raise FileNotFoundError(f"No complete Ey*.csv frames found in {input_dir.resolve()}")
-    return r_m, z_m, valid_steps, frames
+        raise FileNotFoundError(f"No frames found in {Path(input_dir).resolve()}")
+    return (fields.r.values, fields.z.values, fields.step.values.tolist(),
+            fields.time.values, frames)
 
 
 def create_gif(
@@ -97,15 +63,13 @@ def create_gif(
     fps: float = 5.0,
     dpi: int = 120,
     vmax: float = 500.0,
-    dt_seconds: float = 1.0e-12,
 ) -> Path:
     if fps <= 0:
         raise ValueError("fps must be positive")
     if dpi <= 0:
         raise ValueError("dpi must be positive")
 
-    r_m, z_m, steps, frames = load_frames(input_dir)
-    times_s = load_output_times(input_dir, steps, dt_seconds)
+    r_m, z_m, steps, times_s, frames = load_frames(input_dir)
     color_max = vmax if vmax > 0 else max(float(frame.max()) for frame in frames)
     if color_max <= 0:
         color_max = 1.0
@@ -172,7 +136,6 @@ def main() -> None:
         fps=args.fps,
         dpi=args.dpi,
         vmax=args.vmax,
-        dt_seconds=args.dt,
     )
 
 

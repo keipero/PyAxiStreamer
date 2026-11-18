@@ -1,10 +1,10 @@
 # ストリーマ放電シミュレーション
 
-軸対称r-z有限体積モデルです。Poisson方程式はFiPyで組み立て、電子移流拡散はNumbaで陽的に更新します。反応・物理係数はNumPyで評価します。
-Poissonと光電離ではSciPyのLU分解を再利用します。
-電子密度・電位はFiPy変数を正本とし、NumPy計算には2次元ビューを渡します。
-電子密度・電位の[状態管理の仕様・検証](FIPY_STATE_UNIFICATION.md)と、
-[SciPy LU再利用の仕様・検証](SCIPY_LU_REUSE.md)を参照してください。
+軸対称r-z有限体積モデルです。格子・演算子はNumPyと`scipy.sparse`で組み、電子移流拡散はNumbaで陽的に更新します。反応・物理係数はNumPyで評価します。
+Poissonと光電離は共通の有限体積行列（`grid.conductance_matrix()`）から組み、SciPyのLU分解を再利用します。
+電子密度・電位を含む全状態はNumPy配列で、`state.ne[:] = ...`のようにその場で更新します。
+計算本体はFiPyに依存しません。FiPyは検証用の参照実装（`tests/fipy_reference.py`）だけで使います。
+[SciPy LU再利用の仕様・検証](SCIPY_LU_REUSE.md)も参照してください。
 
 ## 実行
 
@@ -12,11 +12,10 @@ Poissonと光電離ではSciPyのLU分解を再利用します。
 
 ```powershell
 python -m pip install -r requirements.txt
-$env:FIPY_SOLVERS = "scipy"
 python -m streamer_drift_diffusion --t-end=1e-12 --output=outputdata_smoke
 ```
 
-可視化用の追加依存は`python -m pip install ".[notebook]"`で導入できます。
+可視化用の追加依存は`python -m pip install ".[notebook]"`、FiPy参照実装との比較テスト用の依存は`python -m pip install ".[test]"`で導入できます。
 `run_streamer.ipynb`は同じ仮想環境のカーネルを使います。旧版を読み込み済みならカーネルを再起動してください。
 
 ```powershell
@@ -27,10 +26,33 @@ python -m streamer_drift_diffusion
 python -m streamer_drift_diffusion --nr=12 --nz=16 --delta=1e-4 --electrode-gap=6e-4 --t-end=3e-12 --no-output
 
 # インパルス波形
-python -m streamer_drift_diffusion --voltage-mode=impulse --impulse-peak=5000 --output=outputdata_impulse
+python -m streamer_drift_diffusion --voltage-mode=impulse --impulse-peak-voltage=5000 --output=outputdata_impulse
 
-# 適応刻み。固定／適応とも出力先は既存CSVのないフォルダを指定する
+# 適応刻み。固定／適応とも出力先はfields.zarrのないフォルダを指定する
 python -m streamer_drift_diffusion --adaptive-timestep --t-end=5.001e-9 --output-interval=1e-10 --output=outputdata_adaptive
+
+# TOMLの計算条件を読み、一部だけコマンドラインで上書きする
+python -m streamer_drift_diffusion --config-file=run.toml --nr=300
+```
+
+CLIは`SimulationConfig`の全項目からtyroが生成します。項目名の`_`を`-`にしたオプションになり
+（例: `dt_max`→`--dt-max`）、真偽値は`--adaptive-timestep`／`--no-adaptive-timestep`の対で指定します。
+説明と既定値は`--help`で確認できます。旧オプション`--impulse-peak`・`--waveform`は
+`--impulse-peak-voltage`・`--voltage-waveform-file`に変わりました。
+
+`--config-file`には、`SimulationConfig`の項目名をキーとするTOMLを指定します。
+未知のキーはエラーになり、Noneにしたい項目（`dt_max`・`chemistry_table`）はキーを省略します。
+同じ項目をコマンドラインでも指定した場合は、コマンドラインの値が優先されます。
+
+```toml
+# run.toml
+nr = 200
+nz = 150
+voltage_mode = "impulse"
+impulse_peak_voltage = 5000.0
+adaptive_timestep = true
+t_end = 5.001e-9
+output_interval = 1e-10
 ```
 
 Pythonからは次のように実行できます。
@@ -45,7 +67,7 @@ state = run_simulation(config, write_output=False, verbose=False)
 ## 数値モデル
 
 - 電位・密度はセル中心、法線電場・電子速度は全セル面に置くスタガード配置です。
-- `state.grid`が単一のFiPy円筒メッシュ、面の隣接セル、面積・体積、境界区分、距離を管理します。
+- `state.grid`がNumPyの等間隔円筒格子で、面の隣接セル、面積・体積、境界区分、距離と有限体積行列の組立を管理します。面番号はFiPyの`CylindricalGrid2D`と同じです。
 - 密度・電位・中心電場は`(nr,nz)`、半径面は`(nr+1,nz)`、軸方向面は`(nr,nz+1)`です。
 - 座標はm、密度はm⁻³、電位はV、換算電場Ex/Ey/absEはTd、速度はm/sです。
 - 電極は`gas_mask=False`のセルによる階段状近似です。先端位置は`electrode_gap`、形状は`cathode_radius`で設定します。
@@ -55,13 +77,12 @@ state = run_simulation(config, write_output=False, verbose=False)
 ### Poisson求解
 
 `rho=e/epsilon0*(n2p+o2p-om-o2m-ne)`を源として、`-laplacian(phi)=rho`から総電位を直接求めます。
-FiPyの`DiffusionTerm`を気体間だけに適用し、電極・接地・外端のDirichlet条件は共有の面積・半セル距離から対角項と境界源を作ります。
+気体間の面だけを`grid.conductance_matrix()`で結合し、電極・接地・外端のDirichlet条件は共有の面積・半セル距離から対角項と境界源を作ります。
 金属セルは気体との結合を切った独立固定式です。大きな罰則係数は使いません。
 外周・上端は双曲線電極の解析式に現在の印加電圧を掛けた電位、接地面は0 V、電極は印加電圧です。
 
-`PoissonSolver`とFiPy方程式は初期化時に一度作ります。
-初回の求解時にFiPyで行列を一度だけ組み、SciPyの`splu()`によるSuperLU分解を保持します。
-以後は電荷と印加電圧から右辺だけを更新します。初回にFiPyで別のLU求解を行う二重分解はありません。
+`PoissonSolver`は初期化時に左辺行列を一度だけ組みます。
+初回の求解時にSciPyの`splu()`によるSuperLU分解を作って保持し、以後は電荷と印加電圧から右辺だけを更新します。
 格子・電極形状・左辺係数は固定します。これらを変更する場合は新しい`PoissonSolver`を作ってください。
 LUには初期推定が不要で、微小な電荷変化を相対初期残差で省略しません。
 入力・解の有限性と`max(abs(A*phi-b))/max(abs(b))`を検査し、失敗時は正本の電位を求解前へ復元して例外で停止します。
@@ -80,8 +101,8 @@ python -m streamer_drift_diffusion --poisson-tolerance=1e-10 --t-end=0 --no-outp
 
 ### 電子輸送と反応
 
-`ElectronTransport`は同じメッシュ上でVan Leer移流と陽的拡散の面流束を計算し、セルの収支から密度を直接更新します。
-既定のNumbaカーネルは単一スレッドで動作し、初回にJITコンパイルします。FiPyの参照実装は `ElectronTransport(state, config.delta, backend="fipy")` で利用できます。
+`ElectronTransport`は同じ格子上でVan Leer（MC制限）移流と陽的拡散の面流束を計算し、セルの収支から密度を直接更新します。
+Numbaカーネルは単一スレッドで動作し、初回にJITコンパイルします。再構築式はFiPyの`VanLeerConvectionTerm`と同じで、FiPyによる参照実装`tests/fipy_reference.py`の`FiPyElectronTransport`と丸め誤差の範囲で一致することをテストで確認します。
 気体セル間では、電極・外端近傍の勾配を気体側の片側差分で求め、軸近傍の半径方向勾配には軸対称性を反映します。
 移流の再構築面密度は旧セル密度の0～2倍に制限し、合算CFL上限にはこの流出上界を使います。
 気体間のDは調和平均、電極・外部境界は気体側Dと半セル距離で吸収します。外からの流入・電子放出は含めません。
@@ -136,7 +157,7 @@ BOLOSの輸送係数を使う形式2〜4では `electron_diffusion=0` としま�
 10,000 Tdでは900 eV・1200セルと1800 eV・1700セルの比較で移動度が約7%、拡散係数が約8%異なります。高電界端は暫定値です。
 
 反応は陽的に更新し、刻みの判定には負イオンの消費も含めます。
-`species*.npz` には形式4の追加化学種N₂Oも保存します。
+`fields.zarr` には形式4の追加化学種N₂O（`n2o`）も保存します。
 `run_config.json` には断面積・係数表・反応機構のSHA-256と生成条件を記録します。
 
 ## 光電離
@@ -156,7 +177,7 @@ BOLOSの輸送係数を使う形式2〜4では `electron_diffusion=0` としま�
 原論文の3項フィットの範囲は酸素分圧と光の飛行距離の積で1〜150 Torr cmです。
 境界が発光域に近い条件では、計算領域を変えて光電離源の境界依存性を確認できます。
 共有格子の有限体積行列を各項について1回分解し、以後は右辺だけを更新します。
-`Sph*.csv` に生成源 [m⁻³ s⁻¹] を電場・密度と同じフレーム番号で保存します。
+`fields.zarr` の `photoionization` に生成源 [m⁻³ s⁻¹] を電場・密度と同じ時刻で保存します。
 
 ## 時間刻みと出力時刻
 
@@ -168,12 +189,12 @@ BOLOSの輸送係数を使う形式2〜4では `electron_diffusion=0` としま�
 実際の刻みが合算輸送CFL・反応・誘電緩和の安全上限を超える場合、または更新後の検査に失敗した場合は停止します。
 適応モードは安定条件と成長率上限から刻みを選び、失敗した試行の全密度を復元してdtを半減します。
 背景加算量は両モードとも`background_ionization*actual_dt/config.dt`です。
-電子密度の現在値はstateと輸送で共有し、各試行の開始時にFiPyの旧値を更新します。
+電子密度の配列はstateと輸送で共有し、棄却時は電子を含む全密度を開始時の値へ戻します。
 dt_minへの無条件な切上げは行いません。イベントまでの端数は安全側の短縮なのでdt_min未満も許します。
 受理した更新数が`max_steps`に達し、終了時刻へ到達していなければ失敗として停止します。
 
 旧`max_step`・`write_every`・`adaptive_max_steps`と、CLIの`--steps`・`--write-every`・`--adaptive-max-steps`は廃止しました。
-旧`max_step=N`と同じ計算時間は`t_end=(N+1)*dt`です。ただしファイル番号は出力番号へ変わり、0番は未更新の初期状態です。
+旧`max_step=N`と同じ計算時間は`t_end=(N+1)*dt`です。出力の最初のフレーム（time=0）は未更新の初期状態です。
 刻みの分割や保存時刻が変わる条件では、旧計算との数値一致を自動的に保証しません。
 
 | 設定 | 内容・既定値 |
@@ -190,40 +211,45 @@ dt_minへの無条件な切上げは行いません。イベントまでの端�
 | `t_end` | 共通の終了時刻[s]、5.001e-9。0なら初期状態のみ |
 | `output_interval` | 共通の保存間隔[s]、1e-10 |
 
-CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます。
+CLIの全項目と既定値は`python -m streamer_drift_diffusion --help`で確認できます。
 
 ## 保存形式と可視化
 
-物理量は1値1行、rの添字が外側・zの添字が内側、`%e`の小数点以下6桁・LF改行です。
-`Ex`は中心の半径方向、`Ey`は中心の軸方向の換算電場です。
+出力はxarrayで扱えるZarr形式です。出力フォルダには次のファイルを作ります。
 
 | ファイル | 内容 |
 |---|---|
-| `rh.csv`・`zh.csv` | セル中心座標[m] |
-| `gas_mask.csv` | 気体・電極の区分 |
-| `ne*.csv` | 電子密度[m⁻³] |
-| `O*.csv`・`species*.npz` | 係数表モードの中性Oの密度CSVと全化学種の数密度[m⁻³]。NPZは化学種名をキーとする(nr, nz)配列 |
-| `Ex*.csv`・`Ey*.csv`・`absE*.csv` | 中心の換算電場[Td] |
-| `phi*.csv` | 総電位[V] |
-| `times.csv` | 両モードの出力番号・step・実時刻 |
-| `timestep_history.csv` | 両モードの刻み・制約・流出収支 |
-| `run_config.json` | 両モードの設定・ライブラリ版・FiPy組立/SciPy SuperLU・行列と分解の再利用 |
-| `failure.json`・`failure_state.npz` | 両モードの停止診断。NPZは数値配列のみ |
+| `fields.zarr` | 次元`(time, r, z)`の場。全化学種の密度`ne`・`n2`・`o2`・`n2p`・`o2p`・`om`・`o2m`・`o`・`n2o`[m⁻³]、総電位`phi`[V]、中心の換算電場`ex`・`ey`・`abs_e`[Td]、光電離源`photoionization`[m⁻³ s⁻¹]。座標は`time`[s]・`r`・`z`（セル中心[m]）と`step`・`dt`。静的な`gas_mask`・`volume`（2πを省略）も含む |
+| `history.zarr` | 次元`(step,)`の受理更新ごとの刻み・各制約・支配条件`limiting`・再試行数・電子数・電荷・流出収支 |
+| `run_config.json` | 設定・ライブラリ版・数値手法の説明。`fields.zarr`の属性`run_config`にも同じ内容を保存 |
+| `failure.zarr` | 停止時だけ作る診断。状態の全数値配列（中心は`(r, z)`、面は`(r_face, z)`・`(r, z_face)`）と、属性`step`・`time`・`error` |
+
+`fields.zarr`は出力時刻ごとにtime方向へ追記するので、計算が途中で止まってもそれまでのフレームを読めます。
+出力先に`fields.zarr`がすでにあれば、計算条件の混在を防ぐため停止します。
+
+```python
+from streamer_drift_diffusion.output import open_fields, open_history
+
+fields = open_fields("outputdata_adaptive")   # xarray.Dataset（遅延読込み）
+fields.ne.sel(time=1e-9, method="nearest").plot(x="r", y="z")
+fields.abs_e.isel(r=0).plot(x="time", y="z")   # 軸上のストリーク図
+history = open_history("outputdata_adaptive")
+history.dt.plot()
+```
 
 保存済み結果は`notebooks/`の描画Notebook、`notebooks/animate_abs_ez.py`で参照できます。
 `notebooks/plot_axial_field_profiles.ipynb` は同じ時刻と半径の電場・化学種密度を並べて表示します。
-旧出力は保存済みの `ne*.csv`・`O*.csv` を使い、全化学種を表示する場合は計算を再実行します。
-入力フォルダを計算結果に合わせ、両モードとも`times.csv`を残してください。番号から時刻を推測しないでください。
-過去の固定出力にtimes.csvがない場合に限り、描画側のdtを旧計算条件に合わせます。
+CSV出力（`ne*.csv`・`times.csv`など）は廃止しました。旧形式の保存済みフォルダは描画Notebookでは読めないため、必要なら計算を再実行してください。
+`tests/validate_c_*.py`・`tests/report_c_validation.py`は、旧CSV出力とC版を比べた履歴用の道具としてそのまま残しています。
 
 ## コード構成
 
 | ファイル | 役割 |
 |---|---|
-| `grid.py` | 共有メッシュ・幾何・隣接関係・境界区分 |
+| `grid.py` | 共有格子・幾何・隣接関係・境界区分・有限体積行列 |
 | `simulation_types.py` | 計算設定と状態 |
-| `initial_conditions.py` | 設定検査、初期密度とFiPyソルバーの生成 |
-| `electrostatics.py` | FiPy Poisson、電荷源、換算電場、境界電位 |
+| `initial_conditions.py` | 設定検査、初期密度とソルバーの生成 |
+| `electrostatics.py` | Poisson、電荷源、換算電場、境界電位 |
 | `transport.py`、`_transport_kernel.py` | 共通の面係数・輸送CFL、電子輸送と吸収・流出数 |
 | `transport_coefficients.py` | 面の移動度・速度、中心のD |
 | `reactions.py` | 反応係数と密度更新 |
@@ -231,7 +257,8 @@ CLIの条件は`python -m streamer_drift_diffusion --help`で確認できます�
 | `timestepping.py` | 安定刻み、共通のadvance_density()、試行の受理・復元 |
 | `simulation.py` | 固定／適応の共通時間ループと同時刻の電場・係数準備 |
 | `voltage_waveforms.py` | DC・インパルス入力、補間・単位換算 |
-| `output.py` | CSV・メタデータ・停止診断 |
+| `output.py` | xarray・Zarrの場・刻み履歴・停止診断とその読込み |
+| `__main__.py` | tyroによるCLIとTOML設定の読込み |
 
 ## 検証
 
@@ -255,14 +282,14 @@ python -c "import doctest; import streamer_drift_diffusion.simulation as m; doct
 python -m unittest discover -s tests
 ```
 
-`tests/poisson_reference.py`の独立した小格子直接解と、FiPyの組立・境界条件を比較します。
+`tests/poisson_reference.py`の独立した小格子直接解と比較し、`tests/fipy_reference.py`でFiPyの格子・Poisson行列・Van Leer輸送とも一致を確認します。
 既知の放物線解、正負電圧、離散Gauss則、微小電荷変化、非有限入力・残差異常、
-輸送の粒子収支、Gaussian格子収束、時間精度、試行の復元、CSV・CLI・波形も検証対象です。
+輸送の粒子収支、Gaussian格子収束、時間精度、試行の復元、Zarr出力・CLI・波形も検証対象です。
 RB-SORの更新順やスレッド数に固有のテストは、新しいPoissonの物理・数値検証へ置き換えています。
 
 - [時間ループ・出力統合の仕様と検証](TIME_LOOP_UNIFICATION.md)
 - [輸送面係数の一元化](TRANSPORT_FACE_UNIFICATION.md)
-- [FiPy変数を正本とする状態管理](FIPY_STATE_UNIFICATION.md)
+- [FiPy変数を正本とする状態管理（廃止。NumPy配列へ移行済み）](FIPY_STATE_UNIFICATION.md)
 - [Poisson移行の結果・精度・性能](FIPY_POISSON_MIGRATION.md)
 - [FiPy輸送移行と格子共通化の履歴](FIPY_MIGRATION_PLAN.md)
 - [コード削減の設計案](CODE_REDUCTION_PROPOSAL.md)

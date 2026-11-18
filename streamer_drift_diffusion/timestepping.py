@@ -158,7 +158,7 @@ def validate_densities(state):
     >>> state = initialize_simulation(config)
     >>> validate_densities(state)
     """
-    for name in DENSITY_NAMES:
+    for name in getattr(state, "density_names", DENSITY_NAMES):
         density = getattr(state, name)
         if not np.all(np.isfinite(density)) or np.any(density < 0):
             raise TimestepError(f"invalid density: {name}")
@@ -197,13 +197,15 @@ def dielectric_limit(state, config):
     inf
     """
     maximum_mobility = max(float(np.max(state.mobility_r)), float(np.max(state.mobility_z)))
-    if maximum_mobility == 0.:
-        return math.inf
     electrons = np.where(state.gas_mask, state.ne, 0.)
     density = np.maximum(*state.grid.adjacent(electrons))
     density[state.grid.area == 0.] = 0.
     mobility = state.grid.pack_faces(state.mobility_r, state.mobility_z)
-    maximum = float(np.max(np.where(mobility > 0., mobility, maximum_mobility) * density))
+    mobility_density = np.where(mobility > 0., mobility, maximum_mobility) * density
+    for field, charge, ion_mobility in getattr(state, "ion_mobilities", ()):
+        ions = np.maximum(*state.grid.adjacent(getattr(state, field)))
+        mobility_density += abs(charge) * ion_mobility * ions
+    maximum = float(np.max(mobility_density))
     maximum *= config.elementary_charge / config.vacuum_permittivity
     return 1. / maximum if maximum > 0 else math.inf
 
@@ -363,8 +365,7 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
     開始時の全密度を退避し、輸送後・反応後の非負性と物理制約を検査する。
     固定は失敗時に復元して停止、適応だけが半減・再試行する。
     流出数は受理時にだけ累積し、試行中に電場・係数は再計算しない。
-    電子密度はstate.ne_varと輸送が同じ正本を参照する。各試行でFiPy旧値を更新し、
-    棄却時はne_var.setValue()で復元する。他の密度も復元し、派生式のキャッシュも整合させる。
+    棄却時は電子を含む全密度を開始時の値へ復元する。
     この関数は時刻を進めない。更新後の電場準備は呼出側で行う。
 
     Examples
@@ -382,7 +383,8 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
     transport = ElectronTransport(state, config.delta) if transport is None else transport
     if not prepared:
         transport.prepare(state)
-    saved = {name: getattr(state, name).copy() for name in DENSITY_NAMES}
+    density_names = getattr(state, "density_names", DENSITY_NAMES)
+    saved = {name: getattr(state, name).copy() for name in density_names}
     max_retries = config.max_step_retries if config.adaptive_timestep else 0
     for retries in range(max_retries + 1):
         try:
@@ -402,8 +404,7 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
             state.electron_losses[:] += losses
             return dt, retries
         except (TimestepError, FloatingPointError) as exc:
-            state.ne_var.setValue(saved['ne'].ravel(order='F'))
-            for name in DENSITY_NAMES[1:]:
+            for name in density_names:
                 getattr(state, name)[:] = saved[name]
             if retries == max_retries or dt * 0.5 < config.dt_min:
                 raise TimestepError(f"step rejected at dt={dt:.6e}: {exc}") from exc

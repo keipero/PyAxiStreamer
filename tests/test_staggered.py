@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 import numpy as np
+from streamer_drift_diffusion.output import open_failure, open_fields, open_history
 from numpy.testing import assert_allclose, assert_array_equal
 
 from streamer_drift_diffusion import SimulationConfig, initialize_simulation, run_simulation
@@ -211,25 +212,27 @@ class StaggeredTests(unittest.TestCase):
             for name in ('phi', 'er_face', 'ez_face', 'ex', 'ey', 'abs_e', 'vex', 'vey'):
                 assert_allclose(getattr(left, name), getattr(right, name), rtol=2e-13, atol=1e-9)
 
-    def test_csv_fields_remain_centered_and_metadata_describes_layout(self):
+    def test_saved_fields_remain_centered_and_metadata_describes_layout(self):
         config = self.config(adaptive_timestep=True, t_end=1e-12, output_interval=1e-12)
         with tempfile.TemporaryDirectory() as directory:
             state = run_simulation(config, output_dir=directory, verbose=False)
             metadata = json.loads((Path(directory)/'run_config.json').read_text())
             self.assertEqual(metadata['model'], 'staggered-v1')
             self.assertEqual(metadata['field_unit'], 'Td')
-            for prefix, values in (('Ex', state.ex), ('Ey', state.ey), ('absE', state.abs_e)):
-                saved = np.loadtxt(Path(directory)/f'{prefix}1.csv').reshape(state.ne.shape)
-                assert_allclose(saved, values, rtol=6e-7, atol=1e-12)
+            frame = open_fields(directory).isel(time=-1)
+            for name in ('ex', 'ey', 'abs_e'):
+                self.assertEqual(frame[name].dims, ('r', 'z'))
+                assert_array_equal(frame[name], getattr(state, name))
 
     def test_failure_snapshot_contains_complete_face_arrays(self):
         config = self.config(adaptive_timestep=True, t_end=3e-12, max_steps=1)
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TimestepError):
                 run_simulation(config, output_dir=directory, verbose=False)
-            with np.load(Path(directory)/'failure_state.npz') as snapshot:
-                self.assertEqual(snapshot['er_face'].shape, (7, 8))
-                self.assertEqual(snapshot['vey'].shape, (6, 9))
+            snapshot = open_failure(directory)
+            self.assertEqual(snapshot['er_face'].dims, ('r_face', 'z'))
+            self.assertEqual(snapshot['er_face'].shape, (7, 8))
+            self.assertEqual(snapshot['vey'].shape, (6, 9))
 
 
 if __name__ == '__main__':

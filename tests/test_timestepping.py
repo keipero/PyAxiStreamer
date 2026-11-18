@@ -1,5 +1,4 @@
 """適応刻みの保存則、境界流出率、再試行、実時刻出力を検証する。"""
-import csv
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -13,7 +12,7 @@ from streamer_drift_diffusion import SimulationConfig, initialize_simulation, ru
 from streamer_drift_diffusion.simulation import prepare_step, _same_time
 from streamer_drift_diffusion.transport import ElectronTransport
 from streamer_drift_diffusion.reactions import apply_reactions
-from streamer_drift_diffusion.output import load_output_times
+from streamer_drift_diffusion.output import open_failure, open_fields, open_history
 from streamer_drift_diffusion.transport_coefficients import electron_mobility
 from streamer_drift_diffusion.timestepping import (
     DENSITY_NAMES, TimestepError, chemistry_limit, dielectric_limit, timestep_limits, advance_density,
@@ -136,17 +135,13 @@ class AdaptiveTests(unittest.TestCase):
         config = self.config(dt_max=2e-12, dt_min=0.4e-12)
         with tempfile.TemporaryDirectory() as directory:
             state = run_simulation(config, output_dir=directory, verbose=False)
-            with (Path(directory) / 'times.csv').open() as times_stream:
-                rows = list(csv.DictReader(times_stream))
-            times = [float(row['time_s']) for row in rows]
-            assert_allclose(times, [0., 1.3e-12, 2.6e-12, 3.5e-12], rtol=1e-15, atol=0.)
-            for row in rows:
-                self.assertEqual(row['time_s'], row['field_time_s'])
-            assert_array_equal(np.loadtxt(Path(directory) / 'ne0.csv'), np.zeros(config.nr * config.nz))
+            fields = open_fields(directory).load()
+            assert_allclose(fields.time, [0., 1.3e-12, 2.6e-12, 3.5e-12], rtol=1e-15, atol=0.)
+            assert_array_equal(fields.ne.isel(time=0), 0.)
             assert_allclose(state.ne, config.background_ionization * config.t_end / config.dt, rtol=1e-15)
             assert_allclose(state.ne, state.n2p + state.o2p, rtol=1e-15)
             self.assertTrue((Path(directory) / 'run_config.json').is_file())
-            self.assertTrue((Path(directory) / 'timestep_history.csv').is_file())
+            self.assertTrue((Path(directory) / 'history.zarr').is_dir())
             with self.assertRaises(FileExistsError):
                 run_simulation(config, output_dir=directory, verbose=False)
 
@@ -160,8 +155,7 @@ class AdaptiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TimestepError):
                 run_simulation(config, output_dir=directory, verbose=False)
-            self.assertTrue((Path(directory) / 'failure.json').exists())
-            self.assertTrue((Path(directory) / 'failure_state.npz').exists())
+            self.assertTrue(open_failure(directory).attrs['error'])
 
     def test_zero_end_time_and_disabled_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -169,18 +163,6 @@ class AdaptiveTests(unittest.TestCase):
             state = run_simulation(self.config(t_end=0.), output_dir=missing, write_output=False, verbose=False)
             self.assertFalse(missing.exists())
             assert_array_equal(state.ne, np.zeros_like(state.ne))
-
-    def test_plot_times_prefer_metadata_and_reject_missing_frames(self):
-        with tempfile.TemporaryDirectory() as directory:
-            assert_allclose(load_output_times(directory, [0, 100], 1e-12), [0., 1e-10])
-            path = Path(directory) / 'times.csv'
-            path.write_text('frame,time_s\n0,0\n1,3e-12\n', encoding='utf-8')
-            assert_allclose(load_output_times(directory, [0, 1], 1.), [0., 3e-12])
-            with self.assertRaises(ValueError):
-                load_output_times(directory, [2])
-            path.write_text('frame,time_s\n0,0\n0,1\n', encoding='utf-8')
-            with self.assertRaises(ValueError):
-                load_output_times(directory, [0])
 
     def test_accepted_step_guard_stops_instead_of_returning_early(self):
         with self.assertRaises(TimestepError):
@@ -190,13 +172,11 @@ class AdaptiveTests(unittest.TestCase):
         config = self.config(voltage=500., nmax=1e22, t_end=1e-12)
         with tempfile.TemporaryDirectory() as directory:
             state = run_simulation(config, output_dir=directory, verbose=False)
-            with (Path(directory) / 'timestep_history.csv').open() as stream:
-                rows = list(csv.DictReader(stream))
-            self.assertGreater(len(rows), 1)
-            for row in rows:
-                bound = config.dt_safety_factor * min(float(row[key]) for key in
-                    ('dt_cfl_s', 'dt_dielectric_s', 'dt_chemistry_s'))
-                self.assertLessEqual(float(row['dt_s']), bound * (1 + 1e-12))
+            history = open_history(directory).load()
+            self.assertGreater(history.sizes['step'], 1)
+            bound = config.dt_safety_factor * np.minimum(
+                np.minimum(history.dt_cfl, history.dt_dielectric), history.dt_chemistry)
+            self.assertTrue(np.all(history.dt <= bound * (1 + 1e-12)))
             self.assertTrue(np.all(np.isfinite(state.ne)))
             self.assertTrue(np.all(state.ne >= 0))
 
@@ -226,9 +206,7 @@ class AdaptiveTests(unittest.TestCase):
                                  voltage_waveform_file=str(path), background_ionization=0.)
             output = Path(directory) / 'output'
             run_simulation(config, output_dir=output, verbose=False)
-            with (output / 'timestep_history.csv').open() as history:
-                rows = list(csv.DictReader(history))
-            times = np.array([float(row['time_s']) for row in rows])
+            times = open_history(output).time.values
             self.assertTrue(np.any(np.isclose(times, 1e-12, rtol=1e-14, atol=0.)))
             self.assertTrue(np.any(np.isclose(times, 2e-12, rtol=1e-14, atol=0.)))
 
@@ -250,44 +228,39 @@ class AdaptiveTests(unittest.TestCase):
                              t_end=0.7e-9, output_interval=0.1e-9)
         with tempfile.TemporaryDirectory() as directory:
             run_simulation(config, output_dir=directory, verbose=False)
-            with (Path(directory) / 'timestep_history.csv').open() as stream:
-                history = list(csv.DictReader(stream))
-            self.assertEqual(len(history), 728)
-            dts = np.array([float(row['dt_s']) for row in history])
+            history = open_history(directory).load()
+            self.assertEqual(history.sizes['step'], 728)
+            dts = history.dt.values
             self.assertGreater(float(dts.min()), 0.49e-12)
             self.assertLessEqual(float(dts.max()), config.dt)
-            with (Path(directory) / 'times.csv').open() as stream:
-                frames = list(csv.DictReader(stream))
-            self.assertEqual([int(row['step']) for row in frames], [104 * i for i in range(8)])
-            times = np.array([float(row['time_s']) for row in frames])
+            frames = open_fields(directory).load()
+            self.assertEqual(frames.step.values.tolist(), [104 * i for i in range(8)])
+            times = frames.time.values
             assert_allclose(times, np.arange(8) * config.output_interval, rtol=1e-15, atol=0.)
             self.assertTrue(np.all(np.diff(times) > 0))
             self.assertEqual(times[-1], config.t_end)
-            self.assertEqual(len(list(Path(directory).glob('ne*.csv'))), 8)
+            self.assertEqual(frames.ne.sizes['time'], 8)
 
     def test_output_and_end_one_ulp_apart_are_saved_once(self):
         config = self.config(t_end=float(np.nextafter(2e-12, np.inf)), output_interval=2e-12)
         with tempfile.TemporaryDirectory() as directory:
             state = run_simulation(config, output_dir=directory, verbose=False)
-            with (Path(directory) / 'times.csv').open() as stream:
-                rows = list(csv.DictReader(stream))
-            self.assertEqual(len(rows), 2)
-            self.assertEqual(int(rows[-1]['step']), 2)
-            self.assertEqual(float(rows[-1]['time_s']), config.t_end)
-            self.assertEqual(rows[-1]['time_s'], rows[-1]['field_time_s'])
-            self.assertLessEqual(float(rows[-1]['dt_s']), config.dt)
+            frames = open_fields(directory).load()
+            self.assertEqual(frames.sizes['time'], 2)
+            self.assertEqual(int(frames.step[-1]), 2)
+            self.assertEqual(float(frames.time[-1]), config.t_end)
+            self.assertLessEqual(float(frames.dt[-1]), config.dt)
             assert_allclose(state.ne, config.background_ionization * config.t_end / config.dt, rtol=1e-15)
 
     def test_resolvable_end_fraction_below_dt_min_is_preserved(self):
         config = self.config(t_end=1e-12 + 1e-20, output_interval=2e-12)
         with tempfile.TemporaryDirectory() as directory:
             run_simulation(config, output_dir=directory, verbose=False)
-            with (Path(directory) / 'timestep_history.csv').open() as stream:
-                rows = list(csv.DictReader(stream))
-            self.assertEqual(len(rows), 2)
-            self.assertEqual(float(rows[-1]['time_s']), config.t_end)
-            self.assertGreater(float(rows[-1]['dt_s']), 0.)
-            self.assertLess(float(rows[-1]['dt_s']), config.dt_min)
+            history = open_history(directory).load()
+            self.assertEqual(history.sizes['step'], 2)
+            self.assertEqual(float(history.time[-1]), config.t_end)
+            self.assertGreater(float(history.dt[-1]), 0.)
+            self.assertLess(float(history.dt[-1]), config.dt_min)
 
     def test_adaptive_dc_polarities_and_impulse(self):
         for changes in ({'voltage': 500.}, {'voltage': -500.},
