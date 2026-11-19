@@ -43,15 +43,17 @@ def calculate_reaction_coefficients(state):
     (0.0, 0.0, 0.0)
     """
     table = state.chemistry
+    active = state.reaction_mask  # 気体セルから上端の緩衝層を除いたセルだけ反応させる
     if state.reaction_rates is not None:
-        state.reaction_rates[:, state.gas_mask] = table.sample(state.abs_e[state.gas_mask])
+        state.reaction_rates[:] = 0.
+        state.reaction_rates[:, active] = table.sample(state.abs_e[active])
         return
     if table is not None:
-        rates = table.sample(state.abs_e[state.gas_mask])
+        rates = table.sample(state.abs_e[active])
         for target, rate in zip((state.k1, state.k1_o2, state.k2), rates):
             target[:] = 0.
-            target[state.gas_mask] = rate
-    nonzero = (state.abs_e != 0.) & state.gas_mask
+            target[active] = rate
+    nonzero = (state.abs_e != 0.) & active
     field = state.abs_e[nonzero]
     attachment_scale = (5.0 * 5.0) * 1.6e-47
     speed_scale = 3.74e24 * 1e-21
@@ -133,7 +135,7 @@ def apply_reactions(state, config, *, dt):
     >>> float(state.ne[0, 0])
     500000000000.0
     """
-    background = config.background_ionization * (dt/config.dt) * state.gas_mask
+    background = config.background_ionization * (dt/config.dt) * state.reaction_mask
     if state.chemistry is not None and state.chemistry.mechanism is not None:
         increments = state.chemistry.mechanism.increments(state, dt)
     else:
@@ -144,7 +146,7 @@ def apply_reactions(state, config, *, dt):
         r3 = dt * state.k3 * state.o2 * state.o2 * state.ne
         increments = r1n + r1o - r2 - r3, -r1n, -r1o - r2 - r3, r1n, r1o, r2, r3, r2
     ne, n2, o2, n2p, o2p, om, o2m, o, *extra = increments
-    photo = dt * state.photoionization.rate
+    photo = dt * state.photoionization.rate * state.reaction_mask
     ne = ne + photo
     o2 = o2 - photo
     o2p = o2p + photo

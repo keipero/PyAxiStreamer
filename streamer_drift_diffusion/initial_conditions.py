@@ -7,6 +7,7 @@ import numpy as np
 
 from .simulation_types import SimulationConfig, SimulationState, molecular_density
 from .grid import initialize_grid
+from .kinetics import DENSITY_NAMES
 from .electrostatics import PoissonSolver
 from .voltage_waveforms import validate_impulse_parameters
 from .transport_coefficients import calculate_transport_coefficients
@@ -77,6 +78,23 @@ def validate_config(config):
         raise ValueError("photoionization_efficiency must be in (0, 1]")
     if min(config.nitrogen_fraction, config.oxygen_fraction) <= 0.:
         raise ValueError("Helmholtz photoionization requires both N2 and O2")
+    if config.laplace_flux_boundaries not in ("none", "outer", "outer_and_top"):
+        raise ValueError("laplace_flux_boundaries must be none, outer or outer_and_top")
+    if config.flux_neumann_boundaries and config.laplace_flux_boundaries != "none":
+        raise ValueError("flux_neumann_boundaries and laplace_flux_boundaries are exclusive")
+    uniform = config.initial_uniform_density
+    if not isinstance(uniform, Real) or isinstance(uniform, bool) or not math.isfinite(uniform) or uniform < 0.:
+        raise ValueError("initial_uniform_density must be finite and nonnegative [m^-3]")
+    buffer = config.reaction_buffer_height
+    if not isinstance(buffer, Real) or isinstance(buffer, bool) or not math.isfinite(buffer) or buffer < 0.:
+        raise ValueError("reaction_buffer_height must be finite and nonnegative [m]")
+    contact = config.electrode_contact_radius
+    if contact is not None and (not math.isfinite(contact) or contact < 0.):
+        raise ValueError("electrode_contact_radius must be finite and nonnegative [m]")
+    for name in ("positive_ion_mobility", "negative_ion_mobility"):
+        value = getattr(config, name)
+        if not isinstance(value, Real) or isinstance(value, bool) or not math.isfinite(value) or value < 0.:
+            raise ValueError(f"{name} must be finite and nonnegative [m^2/(V s)]")
 
 
 def initialize_simulation(config=None):
@@ -139,6 +157,16 @@ def initialize_simulation(config=None):
         table = arrays['chemistry']
         if table.mechanism is not None and table.mechanism.tabulated:
             arrays['reaction_rates'] = np.zeros((table.rates.shape[1], *arrays['gas_mask'].shape))
+    mechanism = None if arrays['chemistry'] is None else arrays['chemistry'].mechanism
+    extra = () if mechanism is None or not mechanism.tabulated else mechanism.density_names[len(DENSITY_NAMES):]
+    arrays['extra_species'] = {name: np.zeros((config.nr, config.nz)) for name in extra}
+    charges = {"ne": -1, "n2p": 1, "o2p": 1, "om": -1, "o2m": -1} if mechanism is None else mechanism.charges
+    arrays['ion_mobilities'] = tuple(
+        (name, charge, config.positive_ion_mobility if charge > 0 else config.negative_ion_mobility)
+        for name, charge in charges.items()
+        if name != "ne" and (config.positive_ion_mobility if charge > 0 else config.negative_ion_mobility) > 0.)
+    arrays['reaction_mask'] = arrays['gas_mask'] & (
+        arrays['zh'][None, :] < config.nz*config.delta - config.reaction_buffer_height)
     for field in fields(SimulationState):
         if field.name not in arrays:
             arrays[field.name] = np.zeros((config.nr, config.nz), dtype=np.float64)
@@ -150,8 +178,9 @@ def initialize_simulation(config=None):
     mol = molecular_density(config)
     state.n2[:] = config.nitrogen_fraction * mol * state.gas_mask
     state.o2[:] = config.oxygen_fraction * mol * state.gas_mask
-    state.n2p[:] = config.nitrogen_fraction * config.nmax * gaussian * state.gas_mask
-    state.o2p[:] = config.oxygen_fraction * config.nmax * gaussian * state.gas_mask
+    seed = config.nmax * gaussian + config.initial_uniform_density
+    state.n2p[:] = config.nitrogen_fraction * seed * state.gas_mask
+    state.o2p[:] = config.oxygen_fraction * seed * state.gas_mask
     state.ne[:] = state.n2p + state.o2p
     calculate_transport_coefficients(state, config)
     return state

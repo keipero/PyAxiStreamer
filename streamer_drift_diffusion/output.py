@@ -17,7 +17,6 @@ import numpy as np
 import scipy
 import xarray as xr
 
-from .kinetics import DRY_AIR_SPECIES_FIELDS
 
 
 FIELDS_STORE, HISTORY_STORE, FAILURE_STORE = "fields.zarr", "history.zarr", "failure.zarr"
@@ -87,8 +86,12 @@ def run_metadata(config, state):
             "photoionization_model": "bourdon-2007-helmholtz-3",
             "chemistry_table_metadata": None if chemistry is None else {
                 **chemistry.metadata, "max_field_td": float(chemistry.field_td[-1])},
-            "outer_potential": ("zero normal gradient at upper and radial outer faces"
-                                if neumann else "analytic Dirichlet voltage at outer faces"),
+            "outer_potential": ("zero normal gradient at upper and radial outer faces" if neumann
+                                else "analytic Laplace normal field at upper and radial outer faces"
+                                if config.laplace_flux_boundaries == "outer_and_top"
+                                else "analytic Laplace normal field at radial outer faces; analytic "
+                                "Dirichlet voltage at upper faces" if config.laplace_flux_boundaries == "outer"
+                                else "analytic Dirichlet voltage at outer faces"),
             "output_format": "xarray/zarr", "field_and_density_times": "time"}
 
 
@@ -123,7 +126,7 @@ def frame_dataset(state, step, time, dt):
     """
     dims = ("time", "r", "z")
     variables = {}
-    for species, name in DRY_AIR_SPECIES_FIELDS.items():
+    for species, name in state.species_fields.items():
         variables[name] = (dims, getattr(state, name)[None].copy(),
                            {"units": "m-3", "species": species, "long_name": f"{species} number density"})
     for name, (attribute, units, description) in FIELD_VARIABLES.items():
@@ -170,6 +173,8 @@ def state_dataset(state):
             dims = named.get(values.shape) if values.ndim == 2 else None
             dims = dims or tuple(f"{field.name}_dim{axis}" for axis in range(values.ndim))
             variables[field.name] = (dims, values.copy())
+    for name, values in state.extra_species.items():
+        variables[name] = (("r", "z"), values.copy())
     return xr.Dataset(variables)
 
 
@@ -251,8 +256,8 @@ class SimulationOutput:
         """
         state = self.state
         volume = state.volume * (2 * np.pi)
-        charge_density = self.config.elementary_charge * (
-            state.n2p + state.o2p - state.om - state.o2m - state.ne)
+        charge_density = self.config.elementary_charge * sum(
+            charge * getattr(state, name) for name, charge in state.charges.items())
         row = (step, time, dt, limits.cfl, limits.dielectric, limits.chemistry, limits.diffusion,
                limiting, retries, float(np.min(state.ne[state.gas_mask])), float(np.max(state.ne)),
                float(np.max(state.abs_e)), float(np.sum(state.ne * volume)),
@@ -295,10 +300,11 @@ class SimulationOutput:
         """
         dataset = frame_dataset(self.state, step, time, dt)
         store = self.directory / FIELDS_STORE
+        # 追記時もDatasetの属性で上書きされるため、毎回同じ属性を付ける。
+        dataset.attrs["run_config"] = json.dumps(self.metadata)
         if self.frame:
             dataset.drop_vars(["gas_mask", "volume", "r", "z"]).to_zarr(store, append_dim="time", **_ZARR)
         else:
-            dataset.attrs["run_config"] = json.dumps(self.metadata)
             dataset.to_zarr(store, mode="w", encoding={"time": {"dtype": "float64"}}, **_ZARR)
         self.frame += 1
         self._flush_history()

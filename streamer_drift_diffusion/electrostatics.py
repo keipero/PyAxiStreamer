@@ -127,11 +127,25 @@ class PoissonSolver:
             config.electrode_gap, r, config.nz*config.delta) for r in grid.rh])
         low, high = grid.adjacent(gas)
         self.flux_neumann_boundaries = config.flux_neumann_boundaries
+        self.laplace_flux_boundaries = config.laplace_flux_boundaries
         self.insulating_faces = np.zeros_like(low)
+        # 法線電場を解析Laplace電場に固定する面と、その単位電圧当たりの外向き法線勾配 [1/m]。
+        self.flux_faces = np.zeros_like(low)
+        self.laplace_gradient = np.zeros(grid.n_faces)
+        outer, top = grid.face_ids[0][-1], grid.face_ids[1][:, -1]
         if self.flux_neumann_boundaries:
-            self.insulating_faces[grid.face_ids[0][-1]] = True
-            self.insulating_faces[grid.face_ids[1][:, -1]] = True
-        self.boundary_rate = grid.area/grid.distances(gas)*((low ^ high) & ~self.insulating_faces)
+            self.insulating_faces[outer] = True
+            self.insulating_faces[top] = True
+        if self.laplace_flux_boundaries != "none":
+            radius, height = config.nr*config.delta, config.nz*config.delta
+            self.flux_faces[outer] = True
+            self.laplace_gradient[outer] = [laplace_gradient(config, radius, z)[0] for z in grid.zh]
+        if self.laplace_flux_boundaries == "outer_and_top":
+            self.contact_radius = electrode_contact_radius(config)
+            self.flux_faces[top] = grid.rh > self.contact_radius
+            self.laplace_gradient[top] = [laplace_gradient(config, r, height)[1] for r in grid.rh]
+        self.boundary_rate = grid.area/grid.distances(gas)*(
+            (low ^ high) & ~self.insulating_faces & ~self.flux_faces)
         self.diagonal = np.where(gas, grid.sum_faces(self.boundary_rate)/grid.volume, 1/grid.spacing**2)
         self.potential = np.zeros(grid.shape)
         self.matrix = grid.conductance_matrix(grid.area/grid.spacing*(low & high),
@@ -152,6 +166,7 @@ class PoissonSolver:
         Notes
         -----
         radial_boundary・upper_boundaryの現在値を参照して計算する。
+        laplace_flux_boundariesでは、固定した法線勾配による面流束 A·∂φ_L/∂n も加える。
 
         Examples
         --------
@@ -163,8 +178,8 @@ class PoissonSolver:
         (2, 3)
         """
         grid = self.grid
-        return np.where(self.gas,
-            grid.sum_faces(self.boundary_rate*boundary_values(self, 1.))/grid.volume, self.diagonal)
+        faces = self.boundary_rate*boundary_values(self, 1.) + grid.area*self.laplace_gradient*self.flux_faces
+        return np.where(self.gas, grid.sum_faces(faces)/grid.volume, self.diagonal)
 
     def solve(self, rho, voltage):
         """有限性と残差を検査し、指定した電荷源・電圧の総電位を返す。
@@ -356,6 +371,59 @@ def hyperbolic_curve(vele, cr, b, r, z):
     return vele * math.log(1 / math.tan(theta / 2)) / math.log(1 / math.tan(theta_i / 2))
 
 
+def electrode_contact_radius(config):
+    """上端で電極電位に固定する軸付近の半径 [m] を返す。
+
+    config.electrode_contact_radiusがNoneなら、上端（z = nz*delta）の1セル上で
+    双曲線電極 (z/b)² - (r/a)² = 1 が持つ半径 a·sqrt(((z+delta)/b)² - 1) とする。
+
+    >>> from streamer_drift_diffusion import SimulationConfig
+    >>> config = SimulationConfig(nz=260, delta=50e-6, electrode_gap=13e-3, cathode_radius=300e-6)
+    >>> round(electrode_contact_radius(config) * 1e6)
+    173
+    """
+    if config.electrode_contact_radius is not None:
+        return float(config.electrode_contact_radius)
+    a = math.sqrt(config.cathode_radius*config.electrode_gap)
+    height = (config.nz + 1)*config.delta / config.electrode_gap
+    return a*math.sqrt(max(height*height - 1., 0.))
+
+
+def laplace_gradient(config, r, z):
+    """単位印加電圧の解析Laplace電位の勾配 (∂φ/∂r, ∂φ/∂z) [1/m] を返す。
+
+    Parameters
+    ----------
+    config : SimulationConfig
+        cathode_radius・electrode_gap・deltaを使う。
+    r, z : float
+        評価点 [m]。外周・上端の面中心を想定する。
+
+    Returns
+    -------
+    tuple of float
+        半径・軸方向の勾配。外側が電極領域でも使えるよう、
+        領域内側へ向かう2次精度の片側差分（刻み delta*1e-3）で求める。
+
+    Examples
+    --------
+    >>> from streamer_drift_diffusion import SimulationConfig
+    >>> config = SimulationConfig(delta=1e-5, electrode_gap=1e-3, cathode_radius=1e-4)
+    >>> gr, gz = laplace_gradient(config, 2e-4, 1e-3)
+    >>> gr < 0. < gz
+    True
+    """
+    h = 1e-3*config.delta
+
+    def phi(rr, zz):
+        return hyperbolic_curve(1., config.cathode_radius, config.electrode_gap, rr, zz)
+
+    def backward(f, x):
+        return (3.*f(x) - 4.*f(x - h) + f(x - 2.*h))/(2.*h)
+
+    return backward(lambda rr: phi(rr, z), r), backward(lambda zz: phi(r, zz), z)
+
+
 
 def calculate_charge_density(state, config):
     """粒子数密度から体積電荷源rho [V/m^2]を計算する。
@@ -387,9 +455,8 @@ def calculate_charge_density(state, config):
     >>> float(state.rho.max())
     0.0
     """
-    positive = state.n2p + state.o2p
-    negative = state.om + state.o2m + state.ne
-    state.rho[:] = (config.elementary_charge / config.vacuum_permittivity) * (positive - negative)
+    net = sum(charge * getattr(state, name) for name, charge in state.charges.items())
+    state.rho[:] = (config.elementary_charge / config.vacuum_permittivity) * net
     state.rho[~state.gas_mask] = 0.
 
 
@@ -417,6 +484,7 @@ def calculate_electric_field(state, config, *, voltage=None):
     面法線電場はPoissonの有限体積係数と同じ距離・境界電位を使う。
     軸は法線電場0。電極・接地は半セル幅のDirichlet面。
     flux_neumann_boundariesでは上端と半径方向外周の法線電場も0。
+    laplace_flux_boundariesでは、その法線電場を解析Laplace電場（単位応答×電圧）とする。
     中心成分は対向する2面の算術平均で、中心abs_eはその2成分から求める。
     電極内部の面電場・中心電場は0、気体・電極間の法線電場は保持する。
     等間隔格子を対象とする。電場の単位は全てTd。
@@ -442,6 +510,8 @@ def calculate_electric_field(state, config, *, voltage=None):
     low, high = np.where(low_gas, low, boundary), np.where(high_gas, high, boundary)
     field = -(high-low)/(grid.distances(gas)*scale)
     field *= (low_gas | high_gas) & (grid.area > 0.) & ~state.poisson.insulating_faces
+    fixed = state.poisson.flux_faces & (low_gas | high_gas)
+    field[fixed] = -voltage*state.poisson.laplace_gradient[fixed]/scale
     er, ez = state.er_face, state.ez_face
     er[:], ez[:] = grid.split_faces(field)
     state.ex[:] = .5 * (er[:-1] + er[1:]) * gas

@@ -81,6 +81,19 @@ state = run_simulation(config, write_output=False, verbose=False)
 金属セルは気体との結合を切った独立固定式です。大きな罰則係数は使いません。
 外周・上端は双曲線電極の解析式に現在の印加電圧を掛けた電位、接地面は0 V、電極は印加電圧です。
 
+外端の境界条件と、境界付近の人為的な放電を抑える設定：
+
+| 設定 | 内容 |
+|---|---|
+| `laplace_flux_boundaries` | `"outer"` は外周、`"outer_and_top"` は上端も、法線電場を解析Laplace電場に固定する（空間電荷による電位は同次Neumann）。既定 `"none"` は解析電位のDirichlet。空間電荷が近づくと、Dirichletの外周には電場が集中する。 |
+| `electrode_contact_radius` | `"outer_and_top"` で、上端のうち電極電位に固定する軸付近の半径 [m]。既定は上端の1セル上での双曲線電極の半径。 |
+| `reaction_buffer_height` | 上端からこの厚さ [m] で反応・光電離・背景電離を止める。電極胴体が上端を横切る角での暴走を抑える。 |
+| `initial_uniform_density` | 気体全域に一様に置く準中性の初期電子密度 [m⁻³]（Komuroらは5e9）。Gaussian種に加える。 |
+
+上端を針先端の高さに置く（`nz*delta = electrode_gap`）と電極セルはなくなり、上端の電位が電極の代わりになります。
+50 kV級の過電圧では、上端で全面Dirichletにすると導体として働いて電場が集中し、全面Neumannにすると電極電位が浮くため、
+先端の数mm上まで領域を取り、上端に緩衝層を置く構成が安定です。
+
 `PoissonSolver`は初期化時に左辺行列を一度だけ組みます。
 初回の求解時にSciPyの`splu()`によるSuperLU分解を作って保持し、以後は電荷と印加電圧から右辺だけを更新します。
 格子・電極形状・左辺係数は固定します。これらを変更する場合は新しい`PoissonSolver`を作ってください。
@@ -159,6 +172,30 @@ BOLOSの輸送係数を使う形式2〜4では `electron_diffusion=0` としま�
 反応は陽的に更新し、刻みの判定には負イオンの消費も含めます。
 `fields.zarr` には形式4の追加化学種N₂O（`n2o`）も保存します。
 `run_config.json` には断面積・係数表・反応機構のSHA-256と生成条件を記録します。
+
+### 二次ストリーマ用の反応機構
+
+`streamer_drift_diffusion/data/secondary_air_chemistry.yaml` は、1.5Dモデル（1Dstreamer）の基本反応と
+二次ストリーマ用の拡張（クラスターイオン N₄⁺・O₄⁺・N₂O₂⁺、O₃⁻、E/N依存の負イオン脱離、電子・イオン間の再結合）を移したものです。
+電子衝突の係数はBiagiの断面積（`1Dstreamer/streamer_1d/Bolsig/Biagi_N2_O2_1026.txt`）から作ります。
+
+```powershell
+python -m streamer_drift_diffusion.plasma_chemistry ..\..\1Dstreamer\streamer_1d\Bolsig\Biagi_N2_O2_1026.txt outputdata_coefficients\secondary_air_biagi_5000td.json --mechanism streamer_drift_diffusion\data\secondary_air_chemistry.yaml --max-td 5000 --points 241
+```
+
+機構ファイルの書き方：
+
+- `species` 節で基本9種以外の化学種を `名前: {field: 配列名, N: N原子数, O: O原子数, charge: 電荷}` と追加します。
+  追加種は `state.<配列名>` で参照でき、電荷密度・時間刻みの判定・`fields.zarr` の出力に自動で入ります。
+  原子と電荷が保存されない反応は読み込み時にエラーになります。
+- 速度係数 `rate` は `collision`（断面積）と `exp_v1` のほかに、`constant: k`、
+  `arrhenius: {A, b, Ea}`（k = A·T^b·exp(−Ea/T)、Tは気体温度）、
+  `electron_temperature: {A, b}`（k = A·Te^b、Te = (2/3)⟨ε⟩/k_B をBOLOSの平均エネルギーから）、
+  `field: {A, B, C, D}`（k = A·exp(−(B/(C+E/N))²)·exp(−(E/N/D)²)）を使えます。係数表の生成時にE/Nの格子上で評価します。
+- 気体密度で規格化した三体付着（Biagi C47）は、第三体をO₂（`O2: 2`）とN₂（`O2: 1, N2: 1`）のどちらでも書けます。
+
+`positive_ion_mobility`・`negative_ion_mobility` を正にすると、全ての正・負イオン種が面の電場に沿って
+一次風上で移動します（拡散なし、境界では流出だけ）。イオンの陽的な上限刻みは輸送のCFL条件に含めます。
 
 ## 光電離
 

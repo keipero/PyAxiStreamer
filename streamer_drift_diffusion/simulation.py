@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from .simulation_types import SimulationConfig
+from .simulation_types import SimulationConfig, molecular_density
 from .initial_conditions import initialize_simulation
 from .electrostatics import calculate_charge_density, calculate_potential, calculate_electric_field
 from .transport_coefficients import calculate_transport_coefficients
@@ -171,7 +171,7 @@ def run_simulation(config=None, *, output_dir="outputdata", write_output=True, v
     """
     config = SimulationConfig() if config is None else config
     state = initialize_simulation(config)
-    transport = ElectronTransport(state, config.delta)
+    transport = ElectronTransport(state, config.delta, gas_density=molecular_density(config))
     waveform = load_voltage_waveform(config.voltage_waveform_file) if config.voltage_mode == "impulse" else None
     interval = config.output_interval
     time, previous_dt, step, output_number = 0.0, None, 0, 1

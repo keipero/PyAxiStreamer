@@ -72,7 +72,7 @@ class ElectronTransport:
     >>> float(losses.sum())
     0.0
     """
-    def __init__(self, state, spacing):
+    def __init__(self, state, spacing, *, gas_density=None):
         """共有格子から、固定の面分類・距離・境界写しの対応を準備する。
 
         Parameters
@@ -125,6 +125,12 @@ class ElectronTransport:
                     copy = self.boundary[face] & self.interior[source] & (grid.area[face] > 0.)
                     self._boundary_sources[face[copy]] = source[copy]
         self._copy_faces = np.flatnonzero(self._boundary_sources >= 0)
+        if state.ion_mobilities and gas_density is None:
+            raise ValueError("ion drift requires gas_density [m^-3] to convert Td to V/m")
+        self._ion_field_scale = None if gas_density is None else float(gas_density) * 1e-21
+        self.ion_flows = ()
+        self.ion_limit = math.inf
+
     def prepare(self, state):
         """現在の速度・Dから、CFL・輸送・境界流出が共有する面係数を準備する。
 
@@ -189,7 +195,31 @@ class ElectronTransport:
         )
         self.transport_limit = 1./transport_max if transport_max > 0. else math.inf
         self.diffusion_limit = 1./diffusion_max if diffusion_max > 0. else math.inf
+        self._prepare_ions(state)
+        self.transport_limit = min(self.transport_limit, self.ion_limit)
         return self
+
+    def _prepare_ions(self, state):
+        """面の電場からイオンの体積流量 [m³/s]（2π省略）と、その陽的な上限刻みを求める。
+
+        イオンは速度 sign(電荷)·μ·E で一次風上に移流し、拡散は無視する。
+        気体に接する境界面では気体からの流出だけを許し、流入は0とする（吸収境界）。
+        """
+        grid = self.grid
+        flows, maximum = [], 0.
+        if state.ion_mobilities:
+            field = grid.pack_faces(state.er_face, state.ez_face) * self._ion_field_scale
+            if not np.all(np.isfinite(field)):
+                raise FloatingPointError("nonfinite face field for ion drift")
+            for name, charge, mobility in state.ion_mobilities:
+                flow = np.sign(charge) * mobility * field * grid.area * (self.low_gas | self.high_gas)
+                inflow = self.boundary & ((self.low_gas & (flow < 0.)) | (self.high_gas & (flow > 0.)))
+                flow[inflow] = 0.
+                outflow = grid.sum_faces(np.maximum(flow, 0.), np.maximum(-flow, 0.))
+                maximum = max(maximum, float(np.max((outflow / grid.volume)[self.gas])))
+                flows.append((name, flow))
+        self.ion_flows = tuple(flows)
+        self.ion_limit = 1. / maximum if maximum > 0. else math.inf
     def step(self, state, dt, *, prepared=False):
         """旧密度で電子輸送を1回更新し、境界ごとの流出数を返す。
 
@@ -248,5 +278,16 @@ class ElectronTransport:
         )
         if not np.all(np.isfinite(new)) or not np.all(np.isfinite(losses)):
             raise FloatingPointError("nonfinite Numba transport solution or boundary loss")
+        ions = []
+        for name, flow in self.ion_flows:
+            density = getattr(state, name)
+            low, high = grid.adjacent(density)
+            flux = flow * np.where(flow > 0., low, high)
+            updated = (density + dt * grid.sum_faces(-flux, flux) / grid.volume) * self.gas
+            if not np.all(np.isfinite(updated)):
+                raise FloatingPointError(f"nonfinite ion drift solution: {name}")
+            ions.append((density, updated))
         state.ne[:] = new.reshape(self.shape, order="F")
+        for density, updated in ions:
+            density[:] = updated
         return losses

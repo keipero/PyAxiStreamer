@@ -9,8 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .kinetics import (DRY_AIR_MECHANISM_PATH, MassActionMechanism, exp_v1,
-                       load_mechanism_definition)
+from .kinetics import (ANALYTIC_RATE_KINDS, DRY_AIR_MECHANISM_PATH, MassActionMechanism,
+                       analytic_rate, exp_v1, load_mechanism_definition)
 
 
 LEGACY_EQUATIONS = (
@@ -162,13 +162,24 @@ def load_reaction_table(path, config):
     return ReactionTable(field, rates, metadata, swarm, mechanism)
 
 
-def _rate_evaluators(reactions, parsed, excluded):
+def _rate_evaluators(reactions, parsed, excluded, temperature=300.):
+    """各反応の速度係数を、EEDFとE/Nから評価する関数の列を作る。
+
+    collision（断面積の積分）・exp_v1に加え、kinetics.analytic_rate()の解析式
+    （constant・arrhenius・electron_temperature・field）を係数表へ書き出せる。
+    """
     from bolos.process import Process
 
     evaluators, indices = [], []
     for reaction in reactions:
         spec = reaction["rate"]
         reactants = reaction["reactants"]
+        if len(spec) == 1 and next(iter(spec)) in ANALYTIC_RATE_KINDS:
+            analytic_rate(spec, 0., temperature=temperature, mean_energy_ev=1.)  # 係数の検査
+            evaluators.append(lambda solver, eedf, field, spec=spec: float(analytic_rate(
+                spec, field, temperature=temperature, mean_energy_ev=solver.mean_energy(eedf))))
+            indices.append(None)
+            continue
         if set(spec) == {"exp_v1"}:
             if sum(reactants.values()) != 2:
                 raise ValueError(f"exp_v1 requires a two-body reaction for {reaction['id']}")
@@ -182,8 +193,12 @@ def _rate_evaluators(reactions, parsed, excluded):
         channel = spec["collision"]
         normalized = channel.get("density_normalized_cm3", False)
         threshold = channel.get("threshold_ev")
-        if (type(normalized) is not bool
-                or reactants != {"Electron": 1, channel["target"]: 2 if normalized else 1}):
+        heavy = {name: count for name, count in reactants.items() if name != "Electron"}
+        # 気体密度で規格化した三体付着は、第三体をO2（Komuro）またはN2とする。
+        third_body = ({channel["target"]: 2}, *({channel["target"]: 1, other: 1}
+                      for other in ("N2", "O2") if other != channel["target"]))
+        if (type(normalized) is not bool or reactants.get("Electron") != 1
+                or (heavy not in third_body if normalized else heavy != {channel["target"]: 1})):
             raise ValueError(f"collision target or rate order does not match {reaction['id']}")
         matches = [
             (index, collision) for index, collision in enumerate(parsed, 1)
@@ -292,7 +307,7 @@ def generate_reaction_table(cross_sections, field_td, *, temperature=300., nitro
 
     mechanism_path = Path(mechanism_path)
     mechanism_contents, reactions, mechanism = load_mechanism_definition(mechanism_path)
-    evaluators, indices = _rate_evaluators(reactions, parsed, excluded)
+    evaluators, indices = _rate_evaluators(reactions, parsed, excluded, temperature)
     collision_channels = []
     if include_collision_rates:
         for index, collision in enumerate(parsed, 1):

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from .grid import CylindricalGrid
+from .kinetics import DENSITY_NAMES, DRY_AIR_SPECIES_FIELDS
 
 if TYPE_CHECKING:
     from .electrostatics import PoissonSolver
@@ -57,6 +58,9 @@ class SimulationConfig:
         時間刻み [s]
     nmax : float, optional
         最大電子密度 [m^-3]
+    initial_uniform_density : float, optional
+        気体全域に一様に置く準中性の初期電子密度 [m^-3]。正イオンはN₂⁺・O₂⁺に組成比で分配し、
+        Gaussian種に加える。既定0（Komuroらは5e9 m^-3 = 5e3 cm^-3）。
     z0 : float, optional
         初期電子密度の中心位置 [m]
     sr0 : float, optional
@@ -101,6 +105,22 @@ class SimulationConfig:
         発光源の無次元係数。消光補正前の値で、範囲は(0, 1]、既定0.075。
     photoionization_workers : int, optional
         Helmholtz求解のスレッド数。1～3、既定3。
+    positive_ion_mobility, negative_ion_mobility : float, optional
+        正・負イオンの移動度 [m²/(V s)]。0（既定）ならその符号のイオンは静止。
+        正なら全ての正・負イオン種を一次風上で面の電場に沿って移動させる。
+    flux_neumann_boundaries : bool, optional
+        上端・外周の電位と電子流束を法線勾配0とする。既定Falseは解析電位と吸収境界。
+    laplace_flux_boundaries : {"none", "outer", "outer_and_top"}, optional
+        指定した外端面の法線電場を双曲線電極の解析Laplace電場に固定する。
+        そこでは空間電荷による電位が同次Neumann（Komuroらの分割に相当）。
+        "outer"は半径方向外周だけ、"outer_and_top"は上端も。既定"none"は解析電位のDirichlet。
+        電子・イオンは吸収境界のまま。flux_neumann_boundariesとは併用できない。
+    electrode_contact_radius : float, optional
+        "outer_and_top"で、上端のうち電極電位（解析値）に固定する軸付近の半径 [m]。
+        Noneなら上端の1セル上での双曲線電極の半径。これより外側の上端面だけ法線電場を固定する。
+    reaction_buffer_height : float, optional
+        上端から下向きにこの厚さ [m] の層で、反応・光電離（発光と吸収）・背景電離を止める。
+        輸送とイオン移動は続ける。電極胴体が上端を横切る角での人為的な放電を抑える。既定0。
 
     Notes
     -----
@@ -135,6 +155,7 @@ class SimulationConfig:
     voltage_waveform_file: str = str(Path(__file__).resolve().parent / "data" / "impulse_waveform_V50_tr5_tw6.txt") # インパルス電圧波形ファイルのパス
     dt: float = 1.0e-12 # 時間刻み [s]
     nmax: float = 1e19 # 最大電子密度 [m^-3]
+    initial_uniform_density: float = 0.0  # 全域一様の準中性初期電子密度 [m^-3]
     z0: float = 900e-6 # 初期電子密度の中心位置 [m]
     sr0: float = 100e-6 # 初期電子密度の半径方向の広がり [m]
     sz0: float = 100e-6 # 初期電子密度の軸方向の広がり [m]
@@ -156,9 +177,12 @@ class SimulationConfig:
     chemistry_table: str | Path | None = None
     photoionization_efficiency: float = 0.075
     photoionization_workers: int = 3
-    positive_ion_mobility: float = 0.0  # 1.5D軸方向イオン移動度 [m²/(V s)]。
-    negative_ion_mobility: float = 0.0
+    positive_ion_mobility: float = 0.0  # 正イオンの移動度 [m²/(V s)]。0なら静止
+    negative_ion_mobility: float = 0.0  # 負イオンの移動度 [m²/(V s)]。0なら静止
     flux_neumann_boundaries: bool = False  # 添付図の外周電位・電子流束境界条件
+    laplace_flux_boundaries: Literal["none", "outer", "outer_and_top"] = "none"  # 解析Laplace電場で法線電場を固定する外端
+    electrode_contact_radius: float | None = None  # 上端で電極電位に固定する半径 [m]。Noneは自動
+    reaction_buffer_height: float = 0.0  # 上端の反応停止層の厚さ [m]
 
 
 def molecular_density(config):
@@ -301,6 +325,13 @@ class SimulationState:
 
     photoionization : PhotoionizationSolver
         共有格子で3項Helmholtz近似の光電離源を求めるソルバ。
+    extra_species : dict
+        反応機構の``species``節で追加した化学種の密度 {配列名: (nr, nz)} [m⁻³]。
+        ``state.<配列名>``でも参照できる。
+    ion_mobilities : tuple
+        移動するイオンの (配列名, 電荷数, 移動度 [m²/(V s)]) の組。
+    reaction_mask : ndarray of bool, shape (nr, nz)
+        反応・光電離・背景電離を適用するセル。気体セルから上端の緩衝層を除いたもの。
 
     Notes
     -----
@@ -367,3 +398,63 @@ class SimulationState:
     n2o: np.ndarray
     reaction_rates: np.ndarray | None
     photoionization: "PhotoionizationSolver"
+    extra_species: dict  # 反応機構で追加した化学種の密度 {配列名: (nr, nz)} [m^-3]
+    ion_mobilities: tuple  # 移動するイオン ((配列名, 電荷, 移動度 [m^2/(V s)]), ...)
+    reaction_mask: np.ndarray  # 反応を適用するセル（気体かつ上端の緩衝層の外）
+
+    def __getattr__(self, name):
+        """追加化学種の密度を、基本種と同じく``state.<配列名>``で参照できるようにする。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
+        >>> state = initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.))
+        >>> state.extra_species
+        {}
+        """
+        extra = self.__dict__.get("extra_species")
+        if extra is not None and name in extra:
+            return extra[name]
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+
+    @property
+    def density_names(self):
+        """時間発展する全化学種の配列名。基本9種の後に追加種が続く。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
+        >>> initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.)).density_names[:3]
+        ('ne', 'n2', 'o2')
+        """
+        return DENSITY_NAMES + tuple(self.extra_species)
+
+    @property
+    def species_fields(self):
+        """化学種名から配列名への対応（出力用）。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
+        >>> initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.)).species_fields['O2+']
+        'o2p'
+        """
+        mechanism = None if self.chemistry is None else self.chemistry.mechanism
+        if mechanism is not None and mechanism.tabulated:
+            return dict(mechanism.species_fields)
+        return dict(DRY_AIR_SPECIES_FIELDS)
+
+    @property
+    def charges(self):
+        """荷電種の配列名から電荷数への対応。電荷密度の計算に使う。
+
+        Examples
+        --------
+        >>> from streamer_drift_diffusion import SimulationConfig, initialize_simulation
+        >>> initialize_simulation(SimulationConfig(nr=2, nz=3, t_end=0.)).charges
+        {'ne': -1, 'n2p': 1, 'o2p': 1, 'om': -1, 'o2m': -1}
+        """
+        mechanism = None if self.chemistry is None else self.chemistry.mechanism
+        if mechanism is not None:
+            return dict(mechanism.charges)
+        return {"ne": -1, "n2p": 1, "o2p": 1, "om": -1, "o2m": -1}

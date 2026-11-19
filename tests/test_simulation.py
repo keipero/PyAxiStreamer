@@ -31,7 +31,7 @@ class SimulationTests(unittest.TestCase):
         assert_array_equal(state.ne, state.n2p + state.o2p)
         matrices = [getattr(state, f.name) for f in fields(SimulationState)
                     if isinstance(getattr(state, f.name), np.ndarray) and getattr(state, f.name).ndim == 2]
-        self.assertEqual(len(matrices), 28)
+        self.assertEqual(len(matrices), 29)
         for i, left in enumerate(matrices):
             for right in matrices[i + 1:]:
                 self.assertFalse(np.shares_memory(left, right))

@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 from .kinetics import DENSITY_NAMES
+from .simulation_types import molecular_density
 from .transport import ElectronTransport
 
 
@@ -310,7 +311,8 @@ def timestep_limits(state, config, *, transport=None):
     >>> dt == config.dt, retries
     (True, 0)
     """
-    transport = ElectronTransport(state, config.delta) if transport is None else transport
+    transport = (ElectronTransport(state, config.delta, gas_density=molecular_density(config))
+                 if transport is None else transport)
     transport.prepare(state)
     values: dict[str, float] = {"cfl": config.dt_cfl_number*transport.transport_limit,
                                 "dielectric": dielectric_limit(state, config),
@@ -380,7 +382,8 @@ def advance_density(state, config, dt, *, transport=None, prepared=False):
     """
     from .reactions import apply_reactions
 
-    transport = ElectronTransport(state, config.delta) if transport is None else transport
+    transport = (ElectronTransport(state, config.delta, gas_density=molecular_density(config))
+                 if transport is None else transport)
     if not prepared:
         transport.prepare(state)
     density_names = getattr(state, "density_names", DENSITY_NAMES)

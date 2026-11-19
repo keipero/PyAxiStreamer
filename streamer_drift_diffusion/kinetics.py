@@ -97,12 +97,20 @@ class MassActionMechanism:
         mechanism = table.mechanism
     """
 
-    def __init__(self, data, *, tabulated=False, additional_species=None):
+    def __init__(self, data, *, tabulated=False):
         species = DRY_AIR_SPECIES_FIELDS if tabulated else SPECIES_FIELDS
+        additional_species = data.get("additional_species") or {}
         if additional_species:
-            if not tabulated or species.keys() & additional_species.keys():
-                raise ValueError("additional species require a tabulated mechanism and unique names")
+            fields = [entry[0] for entry in additional_species.values()]
+            if (not tabulated or species.keys() & additional_species.keys()
+                    or set(species.values()) & set(fields) or len(set(fields)) != len(fields)
+                    or any(not isinstance(field, str) or not field.isidentifier() for field in fields)
+                    or any(len(entry) != 4 or any(type(value) is not int for value in entry[1:])
+                           or min(entry[1:3]) < 0 for entry in additional_species.values())):
+                raise ValueError("additional species require a tabulated mechanism, unique names "
+                                 "and [field, N atoms, O atoms, charge] entries")
             species = {**species, **{name: entry[0] for name, entry in additional_species.items()}}
+        self.species_fields = dict(species)
         ids = data["reaction_ids"]
         if (data["species"] != list(species) or not ids
                 or any(not isinstance(name, str) or not name for name in ids)
@@ -136,6 +144,8 @@ class MassActionMechanism:
             )
         if np.any(net @ atoms_and_charge.T != 0.):
             raise ValueError("chemistry mechanism does not conserve N, O, or charge")
+        self.charges = {field: int(charge) for field, charge in zip(self.density_names, atoms_and_charge[2])
+                        if charge}
         self._factors = tuple(_nonzero_terms(row) for row in orders)
         self._changes = tuple(_nonzero_terms(column) for column in net.T)
         self._photoionizing = ()
@@ -248,13 +258,47 @@ def exp_v1(field, parameters):
 
 
 def load_mechanism_definition(path):
-    """YAMLの反応式と係数指定を読み、反応次数・化学量論に変換する。"""
+    """YAMLの反応式と係数指定を読み、反応次数・化学量論に変換する。
+
+    Parameters
+    ----------
+    path : str or os.PathLike
+        反応機構のYAML。``reactions``の各要素はid・reactants・products・rateを持つ。
+        任意の``species``節で、基本9種（DRY_AIR_SPECIES_FIELDS）以外の化学種を
+        ``名前: {field: 状態の配列名, N: N原子数, O: O原子数, charge: 電荷}``で追加できる。
+
+    Returns
+    -------
+    contents : bytes
+        ファイルの内容（ハッシュの記録用）。
+    reactions : list of dict
+        YAMLの反応定義。
+    data : dict
+        MassActionMechanismへ渡す化学種・反応ID・次数・正味の化学量論と、
+        additional_species（追加種）・photoionizing・exp_v1。
+
+    Raises
+    ------
+    ValueError
+        未知の化学種、不正な係数、または原子・電荷が保存されない反応。
+
+    Examples
+    --------
+    >>> _, reactions, data = load_mechanism_definition(DRY_AIR_MECHANISM_PATH)
+    >>> data['species'][:3], len(data['reaction_ids']) == len(reactions)
+    (['Electron', 'N2', 'O2'], True)
+    """
     contents = Path(path).read_bytes()
     try:
-        reactions = YAML(typ="safe").load(contents)["reactions"]
+        document = YAML(typ="safe").load(contents)
+        reactions = document["reactions"]
         if any(not isinstance(reaction["rate"], dict) for reaction in reactions):
             raise ValueError("each reaction requires a structured rate definition")
-        species = list(DRY_AIR_SPECIES_FIELDS)
+        additional = {
+            name: [entry["field"], entry.get("N", 0), entry.get("O", 0), entry.get("charge", 0)]
+            for name, entry in (document.get("species") or {}).items()
+        }
+        species = list(DRY_AIR_SPECIES_FIELDS) + list(additional)
         reactants = [reaction["reactants"] for reaction in reactions]
         products = [reaction["products"] for reaction in reactions]
         for side in (*reactants, *products):
@@ -271,6 +315,8 @@ def load_mechanism_definition(path):
             "photoionizing": [reaction.get("photoionizing", False) for reaction in reactions],
             "exp_v1": [reaction["rate"].get("exp_v1") for reaction in reactions],
         }
+        if additional:
+            data["additional_species"] = additional
         MassActionMechanism(data, tabulated=True)
         return contents, reactions, data
     except (KeyError, TypeError, YAMLError) as exc:
@@ -326,3 +372,71 @@ def export_mechanism(gas):
             "orders": orders, "net": net}
     MassActionMechanism(data)
     return tuple(reactions[name] for name in REACTION_FIELDS), data
+
+
+ANALYTIC_RATE_KINDS = ("constant", "arrhenius", "electron_temperature", "field")
+
+
+def analytic_rate(spec, field, *, temperature, mean_energy_ev):
+    """E/N・気体温度・電子の平均エネルギーから、解析式の速度係数 [SI] を評価する。
+
+    Parameters
+    ----------
+    spec : dict
+        次のどれか1つのキーを持つ速度式。係数は粒子数基準のSI（二体 m³/s、三体 m⁶/s）。
+
+        - ``constant: k``
+        - ``arrhenius: {A, b, Ea}``: k = A·T^b·exp(−Ea/T)。Tは気体温度 [K]、Eaは [K]。
+        - ``electron_temperature: {A, b}``: k = A·Te^b。Te = (2/3)⟨ε⟩/k_B [K]。
+        - ``field: {A, B, C, D}``: k = A·exp(−(B/(C+E/N))²)·exp(−(E/N/D)²)。B, C, D は Td。
+          Bを省略すると第1因子は1、Dを省略すると第2因子は1。
+    field : array_like
+        換算電場 E/N [Td]。
+    temperature : float
+        気体温度 [K]。
+    mean_energy_ev : array_like
+        fieldと同じ形の電子の平均エネルギー [eV]。
+
+    Returns
+    -------
+    ndarray
+        fieldと同じ形の速度係数。
+
+    Raises
+    ------
+    ValueError
+        対応外のキー、または非有限・負の係数。
+
+    Examples
+    --------
+    >>> float(analytic_rate({'constant': 4e-18}, 100., temperature=300., mean_energy_ev=1.))
+    4e-18
+    >>> k = analytic_rate({'electron_temperature': {'A': 4.85e-12, 'b': -0.5}}, 0.,
+    ...                   temperature=300., mean_energy_ev=0.0388)
+    >>> round(float(k) / 2.8e-13, 2)
+    1.0
+    >>> float(analytic_rate({'field': {'A': 1.1e-42, 'D': 65.}}, 0., temperature=300., mean_energy_ev=1.))
+    1.1e-42
+    """
+    if len(spec) != 1 or next(iter(spec)) not in ANALYTIC_RATE_KINDS:
+        raise ValueError(f"rate must be exactly one of {ANALYTIC_RATE_KINDS}: {spec}")
+    kind, value = next(iter(spec.items()))
+    field = np.asarray(field, dtype=float)
+    if kind == "constant":
+        rate = np.full_like(field, float(value))
+    elif kind == "arrhenius":
+        rate = np.full_like(field, float(value["A"]) * temperature**float(value.get("b", 0.))
+                            * np.exp(-float(value.get("Ea", 0.)) / temperature))
+    elif kind == "electron_temperature":
+        from scipy.constants import Boltzmann, elementary_charge
+        electron_temperature = 2. / 3. * np.asarray(mean_energy_ev, dtype=float) * elementary_charge / Boltzmann
+        rate = float(value["A"]) * electron_temperature**float(value.get("b", 0.))
+    else:
+        rate = np.full_like(field, float(value["A"]))
+        if "B" in value:
+            rate = rate * np.exp(-(float(value["B"]) / (float(value.get("C", 0.)) + field))**2)
+        if "D" in value:
+            rate = rate * np.exp(-(field / float(value["D"]))**2)
+    if not np.all(np.isfinite(rate)) or np.any(rate < 0.):
+        raise ValueError(f"invalid {kind} rate coefficients: {value}")
+    return rate
